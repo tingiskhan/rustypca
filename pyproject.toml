@@ -51,4 +51,5 @@ lint.select = [
     "SIM", # flake8-simplify    
     "I", # isort
     "TID252", # tidy imports
+    "D", # pydocstyle
 ]

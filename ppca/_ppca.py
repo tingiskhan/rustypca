@@ -52,6 +52,7 @@ class PPCA(BaseEstimator, TransformerMixin):
     >>> X = np.random.randn(100, 10)
     >>> ppca = PPCA(n_components=2)
     >>> X_transformed = ppca.fit_transform(X)
+
     """
 
     def __init__(self, n_components=2, max_iterations=100, tol=1e-4):
@@ -79,6 +80,7 @@ class PPCA(BaseEstimator, TransformerMixin):
         -------
         self : PPCA
             Returns self.
+
         """
         X = check_array(X, accept_sparse=False, ensure_2d=True, dtype=np.float64)
 
@@ -137,6 +139,7 @@ class PPCA(BaseEstimator, TransformerMixin):
         -------
         X_new : ndarray of shape (n_samples, n_components)
             Transformed data.
+
         """
         check_is_fitted(self, ["_rust_model", "n_features_in_"])
 
@@ -165,6 +168,7 @@ class PPCA(BaseEstimator, TransformerMixin):
         -------
         X_new : ndarray of shape (n_samples, n_components)
             Transformed data.
+
         """
         return self.fit(X, y, missing_mask).transform(X)
 
@@ -180,6 +184,7 @@ class PPCA(BaseEstimator, TransformerMixin):
         -------
         X_original : ndarray of shape (n_samples, n_features)
             Reconstructed data.
+
         """
         check_is_fitted(self, ["_rust_model"])
 
@@ -205,6 +210,7 @@ class PPCA(BaseEstimator, TransformerMixin):
         -------
         error : float
             Mean squared reconstruction error (excluding missing values).
+
         """
         check_is_fitted(self, ["_rust_model"])
 
