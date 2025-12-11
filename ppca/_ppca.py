@@ -8,10 +8,10 @@ from sklearn.utils.validation import check_array, check_is_fitted
 
 try:
     from .ppca_rs import PPCARust
-except ImportError:
+except ImportError as e:
     raise ImportError(
         "ppca_rs module not found. Please build the Rust extension with 'pip install -e .' or 'maturin develop'"
-    )
+    ) from e
 
 
 class PPCA(BaseEstimator, TransformerMixin):
@@ -91,6 +91,7 @@ class PPCA(BaseEstimator, TransformerMixin):
             warnings.warn(
                 f"n_components ({self.n_components}) > n_samples ({n_samples}). This may lead to unstable results.",
                 UserWarning,
+                stacklevel=2,
             )
 
         if missing_mask is None:

@@ -43,7 +43,7 @@ features = ["pyo3/extension-module"]
 
 [tool.ruff]
 line-length = 120
-select = [    
+lint.select = [    
     "E", # pycodestyle  
     "F", # Pyflakes    
     "UP", # pyupgrade    

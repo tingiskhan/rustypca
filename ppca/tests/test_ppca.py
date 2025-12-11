@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 from sklearn.datasets import load_iris
 from sklearn.decomposition import PCA
+from sklearn.exceptions import NotFittedError
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -68,7 +69,7 @@ class TestPPCABasics:
         ppca = PPCA(n_components=2)
         ppca.fit(simple_data)
         error = ppca.reconstruction_error(simple_data)
-        assert isinstance(error, (float, np.floating))
+        assert isinstance(error, float | np.floating)
         assert error >= 0
 
 
@@ -111,7 +112,7 @@ class TestPPCAMissingValues:
         ppca = PPCA(n_components=2)
         ppca.fit(X, missing_mask=mask)
         error = ppca.reconstruction_error(X, missing_mask=mask)
-        assert isinstance(error, (float, np.floating))
+        assert isinstance(error, float | np.floating)
         assert error >= 0
 
 
@@ -181,7 +182,7 @@ class TestPPCAEdgeCases:
         """Test that transform before fit raises error."""
         X = np.random.randn(50, 5)
         ppca = PPCA(n_components=2)
-        with pytest.raises(Exception):  # Should raise NotFittedError
+        with pytest.raises(NotFittedError):
             ppca.transform(X)
 
     def test_wrong_feature_dimension_raises(self):
