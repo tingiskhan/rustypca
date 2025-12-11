@@ -1,14 +1,15 @@
 """Comprehensive tests for PPCA implementation."""
 
+import os
+import sys
+
 import numpy as np
 import pytest
-from sklearn.decomposition import PCA
 from sklearn.datasets import load_iris
-import sys
-import os
+from sklearn.decomposition import PCA
 
 # Add parent directory to path for imports
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from ppca import PPCA
 
@@ -39,7 +40,7 @@ class TestPPCABasics:
         """Test fitting on simple data."""
         ppca = PPCA(n_components=2)
         ppca.fit(simple_data)
-        assert hasattr(ppca, 'n_features_in_')
+        assert hasattr(ppca, "n_features_in_")
         assert ppca.n_features_in_ == 10
 
     def test_transform_after_fit(self, simple_data):
@@ -87,7 +88,7 @@ class TestPPCAMissingValues:
         X, mask = data_with_missing
         ppca = PPCA(n_components=2)
         ppca.fit(X, missing_mask=mask)
-        assert hasattr(ppca, 'n_features_in_')
+        assert hasattr(ppca, "n_features_in_")
 
     def test_transform_with_fitted_model(self, data_with_missing):
         """Test transform on data with missing values."""
@@ -162,7 +163,7 @@ class TestPPCAComparison:
         """Test explained variance ratio attribute."""
         ppca = PPCA(n_components=2)
         ppca.fit(comparison_data)
-        assert hasattr(ppca, 'explained_variance_ratio_')
+        assert hasattr(ppca, "explained_variance_ratio_")
         assert ppca.explained_variance_ratio_.shape == (2,)
 
 
@@ -204,8 +205,8 @@ class TestPPCAEdgeCases:
         """Test get_params and set_params."""
         ppca = PPCA(n_components=2, max_iterations=50)
         params = ppca.get_params()
-        assert params['n_components'] == 2
-        assert params['max_iterations'] == 50
+        assert params["n_components"] == 2
+        assert params["max_iterations"] == 50
 
         ppca.set_params(n_components=3, max_iterations=200)
         assert ppca.n_components == 3

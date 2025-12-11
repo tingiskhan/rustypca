@@ -41,7 +41,14 @@ Documentation = "https://github.com/tingiskhan/ppca#readme"
 module-name = "ppca.ppca_rs"
 features = ["pyo3/extension-module"]
 
-[dependency-groups]
-dev = [
-    "pytest>=8.4.2",
+[tool.ruff]
+line-length = 120
+select = [    
+    "E", # pycodestyle  
+    "F", # Pyflakes    
+    "UP", # pyupgrade    
+    "B", # flake8-bugbear   
+    "SIM", # flake8-simplify    
+    "I", # isort
+    "TID252", # tidy imports
 ]
