@@ -22,7 +22,7 @@ This will build the Rust extension and install the Python package.
 
 ### Requirements
 
-- Python >= 3.9
+- Python >= 3.10
 - Rust toolchain (for building from source)
 - numpy >= 1.21.0
 - scikit-learn >= 1.0.0
@@ -122,27 +122,87 @@ PPCA uses the EM algorithm as described in:
 
 The implementation supports missing values by treating them as latent variables in the E-step.
 
-## Project Structure
+### Probabilistic PCA Model
 
+The generative model is:
 ```
-ppca/
-├── ppca-core/          # Rust core implementation
-│   └── src/
-│       ├── lib.rs      # Library entry point
-│       ├── ppca.rs     # Main PPCA algorithm
-│       └── errors.rs   # Error types
-├── ppca-py/            # Python package and bindings
-│   ├── src/
-│   │   └── lib.rs      # PyO3 bindings
-│   ├── ppca/
-│   │   ├── __init__.py
-│   │   └── _ppca.py    # Scikit-learn interface
-│   ├── tests/
-│   │   └── test_ppca.py
-│   ├── Cargo.toml
-│   └── pyproject.toml
-└── README.md
+p(x) = ∫ p(x|z) p(z) dz
+
+where:
+  z ~ N(0, I_d)           (latent variable, d-dimensional)
+  p(x|z) = N(Wz + μ, σ²I) (observation model)
+  W: n×d loading matrix
+  σ²: noise variance
+  μ: data mean
 ```
+
+### EM Algorithm
+
+#### E-Step
+Compute expectations of latent variables given observed data.
+
+For each sample i:
+```
+E[z_i | x_i] = M W^T (x_i - μ)
+where M = (W^T W + σ² I)^-1
+```
+
+For missing values, use only observed dimensions:
+```
+E[z_i | x_i^obs] = M_obs W_obs^T x_i^obs
+where:
+  W_obs: rows of W corresponding to observed features
+  M_obs = (W_obs^T W_obs + σ² I)^-1
+```
+
+#### M-Step
+Update parameters:
+```
+W_new = (X^T Z)(Z^T Z + n·M^-1)^{-1}
+σ²_new = (1/(n·p)) * [Tr(X^T X) - 2Tr(W^T X^T Z) + Tr(Z^T Z W^T W)]
+```
+
+### Convergence Criteria
+
+Converges when: `|σ²_old - σ²_new| < tol`
+
+## Implementation Choices
+
+### Rust Backend
+
+**Why nalgebra?**
+- Pure Rust (no C dependencies for core)
+- Column-major storage (efficient for PCA)
+- Built-in SVD and linear solve
+- Optional LAPACK integration via nalgebra-lapack
+
+**Data Layout**
+- Uses row-major layout for input matrices (N×P)
+- Internally converted for nalgebra operations
+- Efficient for N >> P case (typical in ML)
+
+**Numerical Stability**
+- Uses matrix inversion via LU decomposition
+- Clamps noise variance to ≥ 1e-6 to prevent singularity
+- Normalizes loadings during convergence checking
+
+### Missing Value Handling
+
+**Design Decision**: Treat as latent variables in E-step
+- Probabilistically sound (maximum likelihood)
+- Naturally handles different patterns of missingness per sample
+- No preprocessing/imputation needed
+
+**Implementation**:
+- For each sample, identify observed feature indices
+- Extract corresponding rows from W
+- Compute posterior using only observed data
+- Missing values "filled in" implicitly via latent variable model
+
+**Edge Cases**:
+- All values missing for a sample → E[z_i] = 0
+- No missing values → Standard PPCA
+- Entire feature column missing → Handled by mean computation
 
 ## Development
 
@@ -156,8 +216,7 @@ maturin develop
 ### Running tests
 
 ```bash
-cd ppca-py
-pytest tests/ -v
+make run-tests
 ```
 
 ### Building documentation

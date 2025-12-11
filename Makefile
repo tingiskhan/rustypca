@@ -10,3 +10,6 @@ check:
 
 develop:
 	maturin develop
+
+test:
+	pytest -v ppca
