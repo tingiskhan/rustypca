@@ -1,16 +1,11 @@
 """Comprehensive tests for PPCA implementation."""
 
-import os
-import sys
 
 import numpy as np
 import pytest
 from sklearn.datasets import load_iris
 from sklearn.decomposition import PCA
 from sklearn.exceptions import NotFittedError
-
-# Add parent directory to path for imports
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from ppca import PPCA
 
