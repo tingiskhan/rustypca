@@ -11,3 +11,53 @@ wheels/
 
 # UV
 uv.lock
+
+# Python build artifacts
+*.so
+.Python
+develop-eggs/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+.installed.cfg
+*.egg
+.pytest_cache/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.env
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Rust build artifacts
+target/
+Cargo.lock
+*.rlib
+*.rmeta
+
+# Maturin/PyO3
+*.o
+*.pyd
+*.dll
+ppca_rs.cp*.so

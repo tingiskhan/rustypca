@@ -1,5 +1,6 @@
-# Root configuration for the PPCA monorepo
-# Individual packages have their own pyproject.toml files in their directories
+[build-system]
+requires = ["maturin>=0.15,<0.16"]
+build-backend = "maturin"
 
 [project]
 name = "ppca"
@@ -12,8 +13,7 @@ dependencies = [
     "scikit-learn>=1.0.0",
 ]
 
-[dependency-groups]
-dev = [
-    "pytest>=8.4.2",
-    "ruff>=0.14.8",
-]
+[tool.maturin]
+python-source = "ppca"
+module-name = "ppca.ppca_rs"
+features = ["pyo3/extension-module"]

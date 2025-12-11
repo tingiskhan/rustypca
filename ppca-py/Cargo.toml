@@ -1,0 +1,13 @@
+[package]
+name = "ppca-py"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+pyo3 = { version = "0.20", features = ["extension-module"] }
+ppca-core = { path = "../ppca-core" }
+nalgebra = "0.33"
+
+[lib]
+name = "ppca_rs"
+crate-type = ["cdylib"]
