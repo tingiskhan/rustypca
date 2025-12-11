@@ -82,7 +82,7 @@ class PPCA(BaseEstimator, TransformerMixin):
             Returns self.
 
         """
-        X = check_array(X, accept_sparse=False, ensure_2d=True, dtype=np.float64)
+        X = check_array(X, accept_sparse=False, ensure_2d=True, dtype=np.float64, ensure_all_finite="allow-nan")
 
         n_samples, n_features = X.shape
 
@@ -143,7 +143,7 @@ class PPCA(BaseEstimator, TransformerMixin):
         """
         check_is_fitted(self, ["_rust_model", "n_features_in_"])
 
-        X = check_array(X, accept_sparse=False, ensure_2d=True, dtype=np.float64)
+        X = check_array(X, accept_sparse=False, ensure_2d=True, dtype=np.float64, ensure_all_finite="allow-nan")
 
         if X.shape[1] != self.n_features_in_:
             raise ValueError(f"X has {X.shape[1]} features but model was fitted with {self.n_features_in_} features")
@@ -214,7 +214,7 @@ class PPCA(BaseEstimator, TransformerMixin):
         """
         check_is_fitted(self, ["_rust_model"])
 
-        X = check_array(X, accept_sparse=False, ensure_2d=True, dtype=np.float64)
+        X = check_array(X, accept_sparse=False, ensure_2d=True, dtype=np.float64, ensure_all_finite="allow-nan")
 
         if missing_mask is None:
             missing_mask = np.zeros_like(X, dtype=bool)
