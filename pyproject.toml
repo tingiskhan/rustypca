@@ -6,7 +6,7 @@ name = "ppca"
 version = "0.1.0"
 description = "Probabilistic PCA with missing value support using Rust and PyO3"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 dependencies = [
     "numpy>=1.21.0",
     "scikit-learn>=1.0.0",
