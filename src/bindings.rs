@@ -1,8 +1,8 @@
 use pyo3::prelude::*;
 use pyo3::exceptions::PyValueError;
-use ppca_core::{PPCA, PPCAConfig, PPCAError};
+use super::ppca::{PPCA, PPCAConfig};
 use nalgebra::DMatrix;
-use numpy::{PyArray2, ToPyArray};
+use numpy::{PyArray2};
 
 /// Probabilistic PCA model with PyO3 bindings
 #[pyclass]
@@ -29,7 +29,7 @@ impl PPCARust {
     /// Fit the model to data with missing value mask
     fn fit(
         &mut self,
-        py: Python,
+        _py: Python,
         X: &PyArray2<f64>,
         mask: Option<&PyArray2<bool>>,
     ) -> PyResult<()> {
@@ -53,8 +53,17 @@ impl PPCARust {
         let Y_matrix = self.inner.transform(&X_matrix)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
         
-        let result = Y_matrix.to_pyarray(py).to_owned();
-        Ok(result)
+        // Convert to Vec<Vec<f64>> for from_vec2
+        let nrows = Y_matrix.nrows();
+        let mut result: Vec<Vec<f64>> = Vec::with_capacity(nrows);
+        for i in 0..nrows {
+            let row: Vec<f64> = Y_matrix.row(i).iter().copied().collect();
+            result.push(row);
+        }
+        
+        let arr = PyArray2::from_vec2(py, &result)
+            .map_err(|e| PyValueError::new_err(format!("Failed to create array: {}", e)))?;
+        Ok(arr.to_owned())
     }
 
     /// Reconstruct data from latent representation
@@ -63,8 +72,16 @@ impl PPCARust {
         let X_matrix = self.inner.inverse_transform(&Y_matrix)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
         
-        let result = X_matrix.to_pyarray(py).to_owned();
-        Ok(result)
+        let nrows = X_matrix.nrows();
+        let mut result: Vec<Vec<f64>> = Vec::with_capacity(nrows);
+        for i in 0..nrows {
+            let row: Vec<f64> = X_matrix.row(i).iter().copied().collect();
+            result.push(row);
+        }
+        
+        let arr = PyArray2::from_vec2(py, &result)
+            .map_err(|e| PyValueError::new_err(format!("Failed to create array: {}", e)))?;
+        Ok(arr.to_owned())
     }
 
     /// Fit model and transform data

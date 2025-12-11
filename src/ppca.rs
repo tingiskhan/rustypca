@@ -2,7 +2,7 @@
 //!
 //! Reference: Tipping & Bishop, "Probabilistic Principal Component Analysis", JMLR, 1999
 
-use nalgebra::{DMatrix, DVector, SVD, ClosedSub, ClosedAdd, ClosedMul, ClosedDiv};
+use nalgebra::{DMatrix, DVector, SVD};
 use crate::errors::{PPCAError, Result};
 use std::f64;
 
@@ -85,15 +85,19 @@ impl PPCA {
 
         // Center the data
         let mean = self.compute_mean(X, mask)?;
-        let X_centered = X - DMatrix::from_element(n_samples, n_features, 1.0)
-            .component_mul(&DMatrix::from_fn(n_samples, n_features, |i, _| mean.clone()));
+        let mut X_centered = X.clone();
+        for i in 0..n_samples {
+            X_centered.set_row(i, &(X.row(i) - mean.transpose()));
+        }
 
-        // Initialize parameters
-        let mut loadings = DMatrix::new_random(n_features, self.config.n_components);
+        // Initialize parameters with random values
+        let mut loadings = DMatrix::from_fn(n_features, self.config.n_components, |_, _| {
+            rand::random::<f64>()
+        });
         let mut sigma2 = 1.0;
 
         // Run EM algorithm
-        for iteration in 0..self.config.max_iterations {
+        for _iteration in 0..self.config.max_iterations {
             let old_sigma2 = sigma2;
 
             // E-step: compute expectations
@@ -137,8 +141,13 @@ impl PPCA {
             });
         }
 
-        let X_centered = X - DMatrix::from_element(n_samples, n_features, 1.0)
-            .component_mul(&DMatrix::from_fn(n_samples, n_features, |i, _| result.mean.clone()));
+        let X_centered = {
+            let mut centered = X.clone();
+            for i in 0..n_samples {
+                centered.set_row(i, &(X.row(i) - result.mean.transpose()));
+            }
+            centered
+        };
 
         // Project onto principal components: Y = X @ W @ (W^T @ W + sigma2 * I)^-1
         let WtW = result.loadings.transpose() * &result.loadings;
@@ -204,8 +213,8 @@ impl PPCA {
 
     fn compute_mean(&self, X: &DMatrix<f64>, mask: &DMatrix<bool>) -> Result<DVector<f64>> {
         let n_features = X.ncols();
-        let mut mean = DVector::zeros(n_features);
-        let mut counts = DVector::zeros(n_features);
+        let mut mean: DVector<f64> = DVector::zeros(n_features);
+        let mut counts: DVector<f64> = DVector::zeros(n_features);
 
         for i in 0..X.nrows() {
             for j in 0..n_features {
@@ -238,7 +247,7 @@ impl PPCA {
         // C = W^T W + sigma2 I
         let WtW = W.transpose() * W;
         let sigma2_I = DMatrix::from_diagonal(&DVector::from_element(d, sigma2));
-        let C = WtW + sigma2_I;
+        let C = WtW + sigma2_I.clone();
 
         // Compute C^-1
         let C_inv = self.matrix_inverse(&C)?;
@@ -333,7 +342,7 @@ impl PPCA {
         let svd = SVD::new(WtW, true, true);
 
         let singular_values = svd.singular_values.clone();
-        let variance = (singular_values - sigma2).map(|v| v.max(0.0));
+        let variance = singular_values.map(|v| (v - sigma2).max(0.0));
 
         let sum_variance: f64 = variance.iter().sum();
         let variance_ratio = variance / sum_variance;
@@ -342,7 +351,7 @@ impl PPCA {
     }
 
     fn matrix_inverse(&self, M: &DMatrix<f64>) -> Result<DMatrix<f64>> {
-        M.try_inverse()
+        M.clone().try_inverse()
             .ok_or(PPCAError::MatrixError("Matrix is singular".to_string()))
     }
 }

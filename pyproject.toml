@@ -1,5 +1,5 @@
 [build-system]
-requires = ["maturin>=1.10,<=2.0"]
+requires = ["maturin>=1.0,<2.0"]
 build-backend = "maturin"
 
 [project]
@@ -7,15 +7,41 @@ name = "ppca"
 version = "0.1.0"
 description = "Probabilistic PCA with missing value support using Rust and PyO3"
 readme = "README.md"
-requires-python = ">=3.11"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [{name = "PPCA Contributors"}]
+keywords = ["pca", "probabilistic", "missing-values", "machine-learning"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+]
 dependencies = [
-    "maturin>=1.10.2",
     "numpy>=1.21.0",
     "scikit-learn>=1.0.0",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=3.0",
+    "maturin>=1.0",
+]
+
+[project.urls]
+Repository = "https://github.com/tingiskhan/ppca"
+Documentation = "https://github.com/tingiskhan/ppca#readme"
+
+[tool.maturin]
+module-name = "ppca.ppca_rs"
+features = ["pyo3/extension-module"]
+
 [dependency-groups]
 dev = [
     "pytest>=8.4.2",
-    "ruff>=0.14.8",
 ]

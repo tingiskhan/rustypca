@@ -118,7 +118,11 @@ class PPCA(BaseEstimator, TransformerMixin):
         self._rust_model.fit(X, missing_mask)
         
         # Store attributes for sklearn compatibility
-        self.mean_ = np.mean(X[~missing_mask.reshape(-1)].reshape(-1, X.shape[1]), axis=0)
+        if np.any(~missing_mask):
+            # Only compute mean from non-missing values
+            self.mean_ = np.nanmean(np.where(missing_mask, np.nan, X), axis=0)
+        else:
+            self.mean_ = np.mean(X, axis=0)
         
         # Get components from the model (loadings)
         X_transformed = self._rust_model.transform(X)
