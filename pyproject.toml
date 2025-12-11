@@ -6,8 +6,8 @@ build-backend = "maturin"
 name = "ppca"
 version = "0.1.0"
 description = "Probabilistic PCA with missing value support using Rust and PyO3"
-readme = "README.md"
-license = "MIT"
+readme = {file = "README.md"}
+license = {file = "LICENSE"}
 requires-python = ">=3.10"
 authors = [{name = "PPCA Contributors"}]
 keywords = ["pca", "probabilistic", "missing-values", "machine-learning"]
