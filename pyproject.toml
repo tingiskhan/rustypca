@@ -9,7 +9,7 @@ description = "Probabilistic PCA with missing value support using Rust and PyO3"
 readme = {file = "README.md"}
 license = {file = "LICENSE"}
 requires-python = ">=3.10"
-authors = [{name = "PPCA Contributors"}]
+authors = [{name = "Victor Gruselius", email = "victor.tingstrom@gmail.com"}]
 keywords = ["pca", "probabilistic", "missing-values", "machine-learning"]
 classifiers = [
     "Development Status :: 3 - Alpha",
