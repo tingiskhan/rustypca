@@ -1,6 +1,5 @@
 """Comprehensive tests for PPCA implementation."""
 
-
 import numpy as np
 import pytest
 from sklearn.datasets import load_iris
@@ -153,7 +152,7 @@ class TestPPCAComparison:
             errors.append(error)
 
         # Errors should generally decrease (within tolerance for numerical precision)
-        for earlier, later in zip(errors[:-1], errors[1:]):
+        for earlier, later in zip(errors[:-1], errors[1:], strict=False):
             assert earlier <= later + 1e-4
 
     def test_explained_variance_ratio_shape(self, comparison_data):
