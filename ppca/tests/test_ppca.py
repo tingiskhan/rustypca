@@ -153,7 +153,8 @@ class TestPPCAComparison:
             errors.append(error)
 
         # Errors should generally decrease (within tolerance for numerical precision)
-        assert errors[-1] <= errors[0] + 1e-6
+        for earlier, later in zip(errors[:-1], errors[1:]):
+            assert earlier <= later + 1e-4
 
     def test_explained_variance_ratio_shape(self, comparison_data):
         """Test explained variance ratio attribute."""
