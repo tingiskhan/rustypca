@@ -34,18 +34,24 @@ Documentation = "https://github.com/tingiskhan/ppca#readme"
 module-name = "ppca.ppca_rs"
 features = ["pyo3/extension-module"]
 
+[tool.pytest.ini_options]
+addopts = "--cov=ppca --cov-report=term-missing --cov-fail-under=95"
+
 [tool.ruff]
 line-length = 120
-lint.select = [    
-    "E", # pycodestyle  
-    "F", # Pyflakes    
-    "UP", # pyupgrade    
-    "B", # flake8-bugbear   
-    "SIM", # flake8-simplify    
-    "I", # isort
-    "TID252", # tidy imports
-    "D", # pydocstyle
+lint.select = [
+    "E",     # pycodestyle
+    "F",     # Pyflakes
+    "UP",    # pyupgrade
+    "B",     # flake8-bugbear
+    "SIM",   # flake8-simplify
+    "I",     # isort
+    "TID252",
+    "D",     # pydocstyle
 ]
+
+[tool.ruff.lint.per-file-ignores]
+"ppca/tests/*.py" = ["D"]
 
 [dependency-groups]
 dev = [

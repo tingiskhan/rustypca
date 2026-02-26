@@ -1,4 +1,4 @@
-PHONY: format check develop
+.PHONY: format check develop test
 
 format:
 	ruff format ppca
