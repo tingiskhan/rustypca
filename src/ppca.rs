@@ -124,7 +124,7 @@ impl PPCA {
         }
 
         // Compute explained variance
-        let explained_variance = self.compute_explained_variance(&loadings, sigma2)?;
+        let explained_variance = self.compute_explained_variance(&loadings, sigma2, n_features)?;
 
         self.result = Some(PPCAResult {
             loadings,
@@ -314,21 +314,41 @@ impl PPCA {
         let (n_samples, n_features) = X_centered.shape();
         let d = self.config.n_components;
 
-        // Compute Z and related quantities
-        let mut Z = DMatrix::zeros(n_samples, d);
-        for (i, z) in expectations.iter().enumerate() {
-            Z.set_row(i, &z.transpose());
+        // Per-feature W update: each feature j uses only the samples where
+        // j is observed, so the denominator scales correctly with missing data.
+        let mut W = DMatrix::zeros(n_features, d);
+        for j in 0..n_features {
+            let mut xz_j = DVector::<f64>::zeros(d);
+            let mut zz_j = DMatrix::<f64>::zeros(d, d);
+            let mut count_j = 0usize;
+
+            for i in 0..n_samples {
+                if !mask[(i, j)] {
+                    let x_ij = X_centered[(i, j)];
+                    let z = &expectations[i];
+                    for l in 0..d {
+                        xz_j[l] += x_ij * z[l];
+                    }
+                    for l1 in 0..d {
+                        for l2 in 0..d {
+                            zz_j[(l1, l2)] += z[l1] * z[l2];
+                        }
+                    }
+                    count_j += 1;
+                }
+            }
+
+            // sum_{i in S_j} E[z_i z_i^T] = Z_j^T Z_j + |S_j| * sigma2 * C_inv
+            let zz_j_full = &zz_j + count_j as f64 * sigma2 * C_inv;
+            let zz_j_inv = zz_j_full.try_inverse()
+                .ok_or(PPCAError::MatrixError("Cannot invert per-feature ZtZ".to_string()))?;
+            let w_j = &zz_j_inv * &xz_j;
+            for l in 0..d {
+                W[(j, l)] = w_j[l];
+            }
         }
 
-        // sum_i E[z_i z_i^T] = Z^T Z + n * sigma2 * C_inv
-        let ZtZ: DMatrix<f64> = Z.transpose() * &Z + n_samples as f64 * sigma2 * C_inv;
-
-        // Update W
-        let XtZ = X_centered.transpose() * &Z;
-        let ZtZ_inv = self.matrix_inverse(&ZtZ)?;
-        let W = &XtZ * &ZtZ_inv;
-
-        // Precompute W^T W and trace(C_inv W^T W) for the sigma2 correction
+        // Precompute trace(C_inv W^T W) for the sigma2 correction
         let WtW = W.transpose() * &W;
         let C_inv_WtW = C_inv * &WtW;
         let trace_correction = C_inv_WtW.trace();
@@ -368,19 +388,19 @@ impl PPCA {
     fn compute_explained_variance(
         &self,
         W: &DMatrix<f64>,
-        _sigma2: f64,
+        sigma2: f64,
+        n_features: usize,
     ) -> Result<DVector<f64>> {
         let WtW = W.transpose() * W;
         let svd = SVD::new(WtW, false, false);
 
-        // Eigenvalues of W^T W are the signal variances per component
-        // (the covariance is C = W W^T + sigma2 I, so eig(W^T W) is
-        // already the signal part — no need to subtract sigma2).
+        // Total variance under the PPCA model is
+        //   trace(C) = trace(W W^T + sigma2 I) = sum(eig(W^T W)) + n_features * sigma2
         let signal_variances = svd.singular_values;
-        let total_signal: f64 = signal_variances.iter().sum();
+        let total_variance: f64 = signal_variances.iter().sum::<f64>() + n_features as f64 * sigma2;
 
-        let variance_ratio = if total_signal > 0.0 {
-            signal_variances / total_signal
+        let variance_ratio = if total_variance > 0.0 {
+            signal_variances / total_variance
         } else {
             DVector::from_element(signal_variances.len(), 1.0 / signal_variances.len() as f64)
         };
