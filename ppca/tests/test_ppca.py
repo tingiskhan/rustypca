@@ -103,7 +103,7 @@ class TestPPCAComparison:
             errors.append(ppca.reconstruction_error(iris))
 
         for earlier, later in zip(errors[:-1], errors[1:], strict=False):
-            assert earlier <= later + 1e-4
+            assert earlier >= later - 1e-4
 
     def test_explained_variance_ratio_shape(self, iris):
         ppca = PPCA(n_components=2)

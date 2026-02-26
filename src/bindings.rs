@@ -95,6 +95,19 @@ impl PPCARust {
         self.transform(py, X)
     }
 
+    /// Get the explained variance ratio from the fitted model
+    fn explained_variance_ratio(&self) -> PyResult<Vec<f64>> {
+        let evr = self.inner.explained_variance_ratio()
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(evr.iter().copied().collect())
+    }
+
+    /// Get the noise variance from the fitted model
+    fn noise_variance(&self) -> PyResult<f64> {
+        self.inner.noise_variance()
+            .map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
     /// Compute reconstruction error
     fn reconstruction_error(
         &self,

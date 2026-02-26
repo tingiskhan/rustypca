@@ -83,11 +83,18 @@ impl PPCA {
             });
         }
 
-        // Center the data
+        // Center the data, setting missing entries to 0.0 so they don't
+        // contribute to matrix products in the M-step.
         let mean = self.compute_mean(X, mask)?;
         let mut X_centered = X.clone();
         for i in 0..n_samples {
-            X_centered.set_row(i, &(X.row(i) - mean.transpose()));
+            for j in 0..n_features {
+                if mask[(i, j)] {
+                    X_centered[(i, j)] = 0.0;
+                } else {
+                    X_centered[(i, j)] = X[(i, j)] - mean[j];
+                }
+            }
         }
 
         // Initialize parameters with random values
@@ -105,7 +112,7 @@ impl PPCA {
 
             // M-step: update parameters
             let (new_loadings, new_sigma2) =
-                self.m_step(&X_centered, &expectations, &C, sigma2)?;
+                self.m_step(&X_centered, &expectations, &C, sigma2, mask)?;
 
             loadings = new_loadings;
             sigma2 = new_sigma2;
@@ -144,7 +151,10 @@ impl PPCA {
         let X_centered = {
             let mut centered = X.clone();
             for i in 0..n_samples {
-                centered.set_row(i, &(X.row(i) - result.mean.transpose()));
+                for j in 0..n_features {
+                    let v = X[(i, j)];
+                    centered[(i, j)] = if v.is_nan() { 0.0 } else { v - result.mean[j] };
+                }
             }
             centered
         };
@@ -298,7 +308,8 @@ impl PPCA {
         X_centered: &DMatrix<f64>,
         expectations: &[DVector<f64>],
         C_inv: &DMatrix<f64>,
-        _sigma2: f64,
+        sigma2: f64,
+        mask: &DMatrix<bool>,
     ) -> Result<(DMatrix<f64>, f64)> {
         let (n_samples, n_features) = X_centered.shape();
         let d = self.config.n_components;
@@ -309,26 +320,47 @@ impl PPCA {
             Z.set_row(i, &z.transpose());
         }
 
-        let ZtZ: DMatrix<f64> = Z.transpose() * &Z + n_samples as f64 * C_inv;
+        // sum_i E[z_i z_i^T] = Z^T Z + n * sigma2 * C_inv
+        let ZtZ: DMatrix<f64> = Z.transpose() * &Z + n_samples as f64 * sigma2 * C_inv;
 
         // Update W
         let XtZ = X_centered.transpose() * &Z;
         let ZtZ_inv = self.matrix_inverse(&ZtZ)?;
         let W = &XtZ * &ZtZ_inv;
 
-        // Update sigma2
+        // Precompute W^T W and trace(C_inv W^T W) for the sigma2 correction
+        let WtW = W.transpose() * &W;
+        let C_inv_WtW = C_inv * &WtW;
+        let trace_correction = C_inv_WtW.trace();
+
+        // Update sigma2 — only over observed entries
         let mut tr_sum = 0.0;
+        let mut n_observed = 0usize;
         for i in 0..n_samples {
-            let x = X_centered.row(i).transpose();
             let z = &expectations[i];
 
-            let x_dot_x = x.dot(&x);
-            let z_dot_WtWz = (z.transpose() * W.transpose() * &W * z)[0];
+            for j in 0..n_features {
+                if !mask[(i, j)] {
+                    let x_ij = X_centered[(i, j)];
+                    let mut reconstruction = 0.0;
+                    for l in 0..d {
+                        reconstruction += W[(j, l)] * z[l];
+                    }
+                    tr_sum += (x_ij - reconstruction).powi(2);
+                    n_observed += 1;
+                }
+            }
 
-            tr_sum += x_dot_x - 2.0 * (W.transpose() * &x).dot(z) + z_dot_WtWz;
+            // Trace correction: sigma2 * trace(M^{-1} W^T W) accounts for
+            // posterior uncertainty in z beyond the point estimate.
+            tr_sum += sigma2 * trace_correction;
         }
 
-        let sigma2_new = tr_sum / (n_samples as f64 * n_features as f64);
+        let sigma2_new = if n_observed > 0 {
+            tr_sum / n_observed as f64
+        } else {
+            sigma2
+        };
 
         Ok((W, sigma2_new.max(1e-6)))
     }
@@ -336,16 +368,22 @@ impl PPCA {
     fn compute_explained_variance(
         &self,
         W: &DMatrix<f64>,
-        sigma2: f64,
+        _sigma2: f64,
     ) -> Result<DVector<f64>> {
         let WtW = W.transpose() * W;
-        let svd = SVD::new(WtW, true, true);
+        let svd = SVD::new(WtW, false, false);
 
-        let singular_values = svd.singular_values.clone();
-        let variance = singular_values.map(|v| (v - sigma2).max(0.0));
+        // Eigenvalues of W^T W are the signal variances per component
+        // (the covariance is C = W W^T + sigma2 I, so eig(W^T W) is
+        // already the signal part — no need to subtract sigma2).
+        let signal_variances = svd.singular_values;
+        let total_signal: f64 = signal_variances.iter().sum();
 
-        let sum_variance: f64 = variance.iter().sum();
-        let variance_ratio = variance / sum_variance;
+        let variance_ratio = if total_signal > 0.0 {
+            signal_variances / total_signal
+        } else {
+            DVector::from_element(signal_variances.len(), 1.0 / signal_variances.len() as f64)
+        };
 
         Ok(variance_ratio)
     }
@@ -353,6 +391,20 @@ impl PPCA {
     fn matrix_inverse(&self, M: &DMatrix<f64>) -> Result<DMatrix<f64>> {
         M.clone().try_inverse()
             .ok_or(PPCAError::MatrixError("Matrix is singular".to_string()))
+    }
+
+    /// Get the explained variance ratio from the fitted model
+    pub fn explained_variance_ratio(&self) -> Result<&DVector<f64>> {
+        self.result.as_ref()
+            .map(|r| &r.explained_variance_ratio)
+            .ok_or(PPCAError::NoDimensionality)
+    }
+
+    /// Get the noise variance from the fitted model
+    pub fn noise_variance(&self) -> Result<f64> {
+        self.result.as_ref()
+            .map(|r| r.sigma2)
+            .ok_or(PPCAError::NoDimensionality)
     }
 }
 

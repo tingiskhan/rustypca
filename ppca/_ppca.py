@@ -97,10 +97,8 @@ class PPCA(BaseEstimator, TransformerMixin):
         self._rust_model.fit(X, missing_mask)
 
         self.mean_ = np.nanmean(np.where(missing_mask, np.nan, X), axis=0)
-        X_transformed = self._rust_model.transform(X)
-        explained_var = np.var(X_transformed, axis=0)
-        total_var = np.var(X, axis=0).sum()
-        self.explained_variance_ratio_ = explained_var / (total_var + 1e-10)
+        self.explained_variance_ratio_ = np.array(self._rust_model.explained_variance_ratio())
+        self.noise_variance_ = self._rust_model.noise_variance()
         self.n_features_in_ = n_features
         self.n_samples_seen_ = n_samples
 
@@ -125,6 +123,7 @@ class PPCA(BaseEstimator, TransformerMixin):
         if X.shape[1] != self.n_features_in_:
             raise ValueError(f"X has {X.shape[1]} features but model was fitted with {self.n_features_in_} features")
 
+        X = np.where(np.isnan(X), self.mean_, X)
         return self._rust_model.transform(X)
 
     def fit_transform(self, X, y=None, missing_mask=None):
@@ -160,7 +159,7 @@ class PPCA(BaseEstimator, TransformerMixin):
 
         """
         check_is_fitted(self, ["_rust_model"])
-        X = check_array(X, accept_sparse=False, ensure_2d=True, dtype=np.float64)
+        X = check_array(X, accept_sparse=False, ensure_2d=True, dtype=np.float64, ensure_all_finite="allow-nan")
 
         if X.shape[1] != self.n_components:
             raise ValueError(f"X has {X.shape[1]} components but model has {self.n_components} components")
