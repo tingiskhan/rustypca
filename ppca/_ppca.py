@@ -1,6 +1,9 @@
 """Scikit-learn compatible PPCA implementation."""
 
+from __future__ import annotations
+
 import warnings
+from collections.abc import Sequence
 
 import numpy as np
 from sklearn.base import BaseEstimator, TransformerMixin
@@ -29,6 +32,11 @@ class PPCA(BaseEstimator, TransformerMixin):
         Maximum number of EM iterations.
     tol : float, default=1e-4
         Convergence tolerance for the EM algorithm.
+    loading_signs : array-like of shape (n_components,), optional
+        Per-component sign constraints for the loading columns.
+        +1 forces the column mean to be positive, -1 forces negative,
+        0 leaves it unconstrained.  Applied as a post-EM identification
+        step (sign flip).  ``None`` (default) means no constraints.
 
     Attributes
     ----------
@@ -50,10 +58,17 @@ class PPCA(BaseEstimator, TransformerMixin):
 
     """
 
-    def __init__(self, n_components=2, max_iterations=100, tol=1e-4):
+    def __init__(
+        self,
+        n_components: int = 2,
+        max_iterations: int = 100,
+        tol: float = 1e-4,
+        loading_signs: Sequence[int] | None = None,
+    ):
         self.n_components = n_components
         self.max_iterations = max_iterations
         self.tol = tol
+        self.loading_signs = loading_signs
 
     def fit(self, X, y=None, missing_mask=None):
         """Fit the model to X.
@@ -93,7 +108,23 @@ class PPCA(BaseEstimator, TransformerMixin):
             if missing_mask.shape != X.shape:
                 raise ValueError(f"missing_mask shape {missing_mask.shape} does not match X shape {X.shape}")
 
-        self._rust_model = PPCARust(n_components=self.n_components, max_iterations=self.max_iterations, tol=self.tol)
+        loading_signs = None
+        if self.loading_signs is not None:
+            loading_signs = [int(s) for s in self.loading_signs]
+            if len(loading_signs) != self.n_components:
+                raise ValueError(
+                    f"loading_signs length ({len(loading_signs)}) must equal "
+                    f"n_components ({self.n_components})"
+                )
+            if not all(s in (-1, 0, 1) for s in loading_signs):
+                raise ValueError("loading_signs values must be -1, 0, or +1")
+
+        self._rust_model = PPCARust(
+            n_components=self.n_components,
+            max_iterations=self.max_iterations,
+            tol=self.tol,
+            loading_signs=loading_signs,
+        )
         self._rust_model.fit(X, missing_mask)
 
         self.mean_ = np.nanmean(np.where(missing_mask, np.nan, X), axis=0)

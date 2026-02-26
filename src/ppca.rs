@@ -13,6 +13,9 @@ pub struct PPCAConfig {
     pub max_iterations: usize,
     pub tol: f64,
     pub random_state: Option<u64>,
+    /// Per-component sign constraints for the loadings.
+    /// +1 = column mean must be positive, -1 = negative, 0 = unconstrained.
+    pub loading_signs: Option<Vec<i8>>,
 }
 
 impl Default for PPCAConfig {
@@ -22,6 +25,7 @@ impl Default for PPCAConfig {
             max_iterations: 100,
             tol: 1e-4,
             random_state: None,
+            loading_signs: None,
         }
     }
 }
@@ -120,6 +124,21 @@ impl PPCA {
             // Check convergence
             if (old_sigma2 - sigma2).abs() < self.config.tol {
                 break;
+            }
+        }
+
+        // Apply sign identification constraints to resolved rotational ambiguity
+        if let Some(ref signs) = self.config.loading_signs {
+            for (k, &sign) in signs.iter().enumerate() {
+                if sign != 0 && k < self.config.n_components {
+                    let col_sum: f64 = (0..n_features).map(|j| loadings[(j, k)]).sum();
+                    let needs_flip = (sign > 0 && col_sum < 0.0) || (sign < 0 && col_sum > 0.0);
+                    if needs_flip {
+                        for j in 0..n_features {
+                            loadings[(j, k)] *= -1.0;
+                        }
+                    }
+                }
             }
         }
 

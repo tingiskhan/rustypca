@@ -13,13 +13,14 @@ pub struct PPCARust {
 #[pymethods]
 impl PPCARust {
     #[new]
-    #[pyo3(signature = (n_components=2, max_iterations=100, tol=1e-4))]
-    fn new(n_components: usize, max_iterations: usize, tol: f64) -> Self {
+    #[pyo3(signature = (n_components=2, max_iterations=100, tol=1e-4, loading_signs=None))]
+    fn new(n_components: usize, max_iterations: usize, tol: f64, loading_signs: Option<Vec<i8>>) -> Self {
         let config = PPCAConfig {
             n_components,
             max_iterations,
             tol,
             random_state: None,
+            loading_signs,
         };
         PPCARust {
             inner: PPCA::with_config(config),

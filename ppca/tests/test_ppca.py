@@ -158,6 +158,79 @@ class TestPPCAEdgeCases:
         assert ppca.max_iterations == 200
 
 
+class TestLoadingSigns:
+    """Tests for the optional loading_signs identification constraint.
+
+    Most sign-sensitive tests use structured data (strong first PC) so that
+    EM reliably converges to the same subspace regardless of random init.
+    """
+
+    @pytest.fixture
+    def structured_data(self):
+        """Data with a dominant first PC: X ≈ z @ ones^T + noise."""
+        np.random.seed(0)
+        z = np.random.randn(80, 1)
+        return z @ np.ones((1, 6)) + np.random.randn(80, 6) * 0.1
+
+    def test_none_by_default(self):
+        assert PPCA(n_components=2).loading_signs is None
+
+    def test_positive_constraint_consistent_across_fits(self, structured_data):
+        scores_a = PPCA(n_components=2, loading_signs=[1, 0]).fit_transform(structured_data)
+        scores_b = PPCA(n_components=2, loading_signs=[1, 0]).fit_transform(structured_data)
+        corr = np.corrcoef(scores_a[:, 0], scores_b[:, 0])[0, 1]
+        assert corr > 0.5
+
+    def test_negative_constraint_flips_sign(self, structured_data):
+        pos = PPCA(n_components=2, loading_signs=[1, 0]).fit_transform(structured_data)
+        neg = PPCA(n_components=2, loading_signs=[-1, 0]).fit_transform(structured_data)
+        corr = np.corrcoef(pos[:, 0], neg[:, 0])[0, 1]
+        assert corr < -0.5
+
+    def test_reconstruction_unchanged_by_sign_constraint(self, structured_data):
+        ppca_free = PPCA(n_components=2)
+        ppca_free.fit(structured_data)
+        err_free = ppca_free.reconstruction_error(structured_data)
+
+        ppca_sign = PPCA(n_components=2, loading_signs=[1, 0])
+        ppca_sign.fit(structured_data)
+        err_sign = ppca_sign.reconstruction_error(structured_data)
+
+        np.testing.assert_allclose(err_free, err_sign, rtol=0.05)
+
+    def test_wrong_length_raises(self):
+        ppca = PPCA(n_components=3, loading_signs=[1, 0])
+        with pytest.raises(ValueError, match="loading_signs length"):
+            ppca.fit(np.random.randn(20, 6))
+
+    def test_invalid_value_raises(self):
+        ppca = PPCA(n_components=2, loading_signs=[1, 2])
+        with pytest.raises(ValueError, match="must be -1, 0, or \\+1"):
+            ppca.fit(np.random.randn(20, 6))
+
+    def test_all_zeros_produces_valid_output(self):
+        np.random.seed(42)
+        X = np.random.randn(50, 6)
+        ppca = PPCA(n_components=2, loading_signs=[0, 0])
+        scores = ppca.fit_transform(X)
+        assert scores.shape == (50, 2)
+        assert not np.any(np.isnan(scores))
+
+    def test_with_missing_values(self):
+        np.random.seed(42)
+        X = np.random.randn(30, 8)
+        mask = np.random.rand(30, 8) < 0.2
+        ppca = PPCA(n_components=2, loading_signs=[1, 0])
+        ppca.fit(X, missing_mask=mask)
+        scores = ppca.transform(X)
+        assert scores.shape == (30, 2)
+
+    def test_sklearn_get_params_includes_loading_signs(self):
+        ppca = PPCA(n_components=2, loading_signs=[1, -1])
+        params = ppca.get_params()
+        assert params["loading_signs"] == [1, -1]
+
+
 class TestPPCANumericalStability:
     def test_handles_very_small_values(self):
         np.random.seed(42)
