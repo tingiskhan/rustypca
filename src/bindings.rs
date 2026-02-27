@@ -1,10 +1,11 @@
-use pyo3::prelude::*;
-use pyo3::exceptions::PyValueError;
-use super::ppca::{PPCA, PPCAConfig};
 use nalgebra::DMatrix;
-use numpy::{PyArray2};
+use numpy::PyArray2;
+use pyo3::exceptions::PyValueError;
+use pyo3::prelude::*;
 
-/// Probabilistic PCA model with PyO3 bindings
+use super::ppca::{NoiseType, PPCAConfig, PPCA};
+
+/// Probabilistic PCA model with PyO3 bindings.
 #[pyclass]
 pub struct PPCARust {
     inner: PPCA,
@@ -13,137 +14,161 @@ pub struct PPCARust {
 #[pymethods]
 impl PPCARust {
     #[new]
-    #[pyo3(signature = (n_components=2, max_iterations=100, tol=1e-4, loading_signs=None, random_state=None))]
-    fn new(n_components: usize, max_iterations: usize, tol: f64, loading_signs: Option<Vec<i8>>, random_state: Option<u64>) -> Self {
+    #[pyo3(signature = (n_components=2, max_iterations=100, tol=1e-4, random_state=None, noise_type="isotropic", l2_penalty=0.0))]
+    fn new(
+        n_components: usize,
+        max_iterations: usize,
+        tol: f64,
+        random_state: Option<u64>,
+        noise_type: &str,
+        l2_penalty: f64,
+    ) -> PyResult<Self> {
+        let noise_type_enum = match noise_type {
+            "isotropic" => NoiseType::Isotropic,
+            "diagonal" => NoiseType::Diagonal,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "noise_type must be 'isotropic' or 'diagonal', got '{}'",
+                    other
+                )))
+            }
+        };
         let config = PPCAConfig {
             n_components,
             max_iterations,
             tol,
             random_state,
-            loading_signs,
+            noise_type: noise_type_enum,
+            l2_penalty,
         };
-        PPCARust {
+        Ok(PPCARust {
             inner: PPCA::with_config(config),
-        }
+        })
     }
 
-    /// Fit the model to data with missing value mask
-    fn fit(
-        &mut self,
-        _py: Python,
-        X: &PyArray2<f64>,
-        mask: Option<&PyArray2<bool>>,
-    ) -> PyResult<()> {
-        let X_matrix = convert_py_array_to_matrix(X)?;
-        
-        let mask_matrix = if let Some(m) = mask {
-            convert_py_bool_array_to_matrix(m)?
-        } else {
-            DMatrix::from_element(X_matrix.nrows(), X_matrix.ncols(), false)
+    fn fit(&mut self, _py: Python, x: &PyArray2<f64>, mask: Option<&PyArray2<bool>>) -> PyResult<()> {
+        let x_mat = py_to_matrix(x)?;
+        let mask_mat = match mask {
+            Some(m) => py_bool_to_matrix(m)?,
+            None => DMatrix::from_element(x_mat.nrows(), x_mat.ncols(), false),
         };
-
-        self.inner.fit(&X_matrix, &mask_matrix)
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
-
-        Ok(())
+        self.inner
+            .fit(&x_mat, &mask_mat)
+            .map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
-    /// Transform data using the fitted model
-    fn transform(&self, py: Python, X: &PyArray2<f64>) -> PyResult<Py<PyArray2<f64>>> {
-        let X_matrix = convert_py_array_to_matrix(X)?;
-        let Y_matrix = self.inner.transform(&X_matrix)
+    fn transform(&self, py: Python, x: &PyArray2<f64>) -> PyResult<Py<PyArray2<f64>>> {
+        let x_mat = py_to_matrix(x)?;
+        let y = self
+            .inner
+            .transform(&x_mat)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        
-        // Convert to Vec<Vec<f64>> for from_vec2
-        let nrows = Y_matrix.nrows();
-        let mut result: Vec<Vec<f64>> = Vec::with_capacity(nrows);
-        for i in 0..nrows {
-            let row: Vec<f64> = Y_matrix.row(i).iter().copied().collect();
-            result.push(row);
-        }
-        
-        let arr = PyArray2::from_vec2(py, &result)
-            .map_err(|e| PyValueError::new_err(format!("Failed to create array: {}", e)))?;
-        Ok(arr.to_owned())
+        matrix_to_py(py, &y)
     }
 
-    /// Reconstruct data from latent representation
-    fn inverse_transform(&self, py: Python, Y: &PyArray2<f64>) -> PyResult<Py<PyArray2<f64>>> {
-        let Y_matrix = convert_py_array_to_matrix(Y)?;
-        let X_matrix = self.inner.inverse_transform(&Y_matrix)
+    fn inverse_transform(&self, py: Python, y: &PyArray2<f64>) -> PyResult<Py<PyArray2<f64>>> {
+        let y_mat = py_to_matrix(y)?;
+        let x = self
+            .inner
+            .inverse_transform(&y_mat)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        
-        let nrows = X_matrix.nrows();
-        let mut result: Vec<Vec<f64>> = Vec::with_capacity(nrows);
-        for i in 0..nrows {
-            let row: Vec<f64> = X_matrix.row(i).iter().copied().collect();
-            result.push(row);
-        }
-        
-        let arr = PyArray2::from_vec2(py, &result)
-            .map_err(|e| PyValueError::new_err(format!("Failed to create array: {}", e)))?;
-        Ok(arr.to_owned())
+        matrix_to_py(py, &x)
     }
 
-    /// Fit model and transform data
     fn fit_transform(
         &mut self,
         py: Python,
-        X: &PyArray2<f64>,
+        x: &PyArray2<f64>,
         mask: Option<&PyArray2<bool>>,
     ) -> PyResult<Py<PyArray2<f64>>> {
-        self.fit(py, X, mask)?;
-        self.transform(py, X)
+        self.fit(py, x, mask)?;
+        self.transform(py, x)
     }
 
-    /// Get the explained variance ratio from the fitted model
     fn explained_variance_ratio(&self) -> PyResult<Vec<f64>> {
-        let evr = self.inner.explained_variance_ratio()
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        Ok(evr.iter().copied().collect())
-    }
-
-    /// Get the noise variance from the fitted model
-    fn noise_variance(&self) -> PyResult<f64> {
-        self.inner.noise_variance()
+        self.inner
+            .explained_variance_ratio()
+            .map(|v| v.iter().copied().collect())
             .map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
-    /// Compute reconstruction error
+    fn loadings(&self, py: Python) -> PyResult<Py<PyArray2<f64>>> {
+        let r = self
+            .inner
+            .result()
+            .ok_or_else(|| PyValueError::new_err("Model not fitted"))?;
+        matrix_to_py(py, &r.loadings)
+    }
+
+    fn noise_variance(&self) -> PyResult<f64> {
+        self.inner
+            .noise_variance()
+            .map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
+    fn noise_variances(&self) -> PyResult<Vec<f64>> {
+        self.inner
+            .noise_variances()
+            .map(|v| v.iter().copied().collect())
+            .map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
+    fn n_iter(&self) -> PyResult<usize> {
+        self.inner
+            .n_iter()
+            .map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
+    fn log_likelihoods(&self) -> PyResult<Vec<f64>> {
+        self.inner
+            .log_likelihoods()
+            .map(|v| v.clone())
+            .map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
     fn reconstruction_error(
         &self,
-        X: &PyArray2<f64>,
+        x: &PyArray2<f64>,
         mask: Option<&PyArray2<bool>>,
     ) -> PyResult<f64> {
-        let X_matrix = convert_py_array_to_matrix(X)?;
-        
-        let mask_matrix = if let Some(m) = mask {
-            convert_py_bool_array_to_matrix(m)?
-        } else {
-            DMatrix::from_element(X_matrix.nrows(), X_matrix.ncols(), false)
+        let x_mat = py_to_matrix(x)?;
+        let mask_mat = match mask {
+            Some(m) => py_bool_to_matrix(m)?,
+            None => DMatrix::from_element(x_mat.nrows(), x_mat.ncols(), false),
         };
-
-        self.inner.reconstruction_error(&X_matrix, &mask_matrix)
+        self.inner
+            .reconstruction_error(&x_mat, &mask_mat)
             .map_err(|e| PyValueError::new_err(e.to_string()))
     }
 }
 
-fn convert_py_array_to_matrix(arr: &PyArray2<f64>) -> PyResult<DMatrix<f64>> {
-    let arr_readonly = arr.readonly();
-    let shape = arr_readonly.dims();
-    let slice = arr_readonly.as_slice().map_err(|_| PyValueError::new_err("Failed to get array data"))?;
-    
-    let matrix = DMatrix::from_row_slice(shape[0], shape[1], slice);
-    Ok(matrix)
+// ── Conversion helpers ──────────────────────────────────────────────────────
+
+fn py_to_matrix(arr: &PyArray2<f64>) -> PyResult<DMatrix<f64>> {
+    let ro = arr.readonly();
+    let shape = ro.dims();
+    let slice = ro
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("Failed to read array data"))?;
+    Ok(DMatrix::from_row_slice(shape[0], shape[1], slice))
 }
 
-fn convert_py_bool_array_to_matrix(arr: &PyArray2<bool>) -> PyResult<DMatrix<bool>> {
-    let arr_readonly = arr.readonly();
-    let shape = arr_readonly.dims();
-    let slice = arr_readonly.as_slice().map_err(|_| PyValueError::new_err("Failed to get array data"))?;
-    
-    let matrix = DMatrix::from_row_slice(shape[0], shape[1], slice);
-    Ok(matrix)
+fn py_bool_to_matrix(arr: &PyArray2<bool>) -> PyResult<DMatrix<bool>> {
+    let ro = arr.readonly();
+    let shape = ro.dims();
+    let slice = ro
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("Failed to read array data"))?;
+    Ok(DMatrix::from_row_slice(shape[0], shape[1], slice))
+}
+
+fn matrix_to_py(py: Python, m: &DMatrix<f64>) -> PyResult<Py<PyArray2<f64>>> {
+    let rows: Vec<Vec<f64>> = (0..m.nrows())
+        .map(|i| m.row(i).iter().copied().collect())
+        .collect();
+    let arr = PyArray2::from_vec2(py, &rows)
+        .map_err(|e| PyValueError::new_err(format!("Failed to create array: {}", e)))?;
+    Ok(arr.to_owned())
 }
 
 #[pymodule]

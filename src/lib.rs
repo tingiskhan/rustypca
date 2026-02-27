@@ -6,7 +6,7 @@ pub mod ppca;
 pub mod errors;
 pub mod bindings;
 
-pub use ppca::{PPCA, PPCAConfig, PPCAResult};
+pub use ppca::{PPCA, PPCAConfig, PPCAResult, NoiseType};
 pub use errors::PPCAError;
 
 // Re-export for convenience

@@ -1,23 +1,44 @@
-//! Probabilistic PCA implementation using the EM algorithm
+//! Probabilistic PCA via EM (Tipping & Bishop, 1999).
 //!
-//! Reference: Tipping & Bishop, "Probabilistic Principal Component Analysis", JMLR, 1999
+//! Supports:
+//! - Missing values (EM marginalises over unobserved entries)
+//! - Isotropic noise (classic PPCA: ε ~ N(0, σ²I))
+//! - Diagonal noise  (Factor Analysis: ε ~ N(0, diag(ψ)))
+//! - L2 penalty on the loading matrix W
+//! - Observation-pattern grouping for speed
 
+use crate::errors::{PPCAError, Result};
 use nalgebra::{DMatrix, DVector, SVD};
 use rand::Rng;
 use rand::SeedableRng;
-use crate::errors::{PPCAError, Result};
-use std::f64;
+use std::collections::HashMap;
 
-/// Configuration for PPCA training
+// ── Noise type ──────────────────────────────────────────────────────────────
+
+/// Whether the noise covariance is isotropic (PPCA) or diagonal (FA).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoiseType {
+    Isotropic,
+    Diagonal,
+}
+
+impl Default for NoiseType {
+    fn default() -> Self {
+        NoiseType::Isotropic
+    }
+}
+
+// ── Config / Result ─────────────────────────────────────────────────────────
+
 #[derive(Debug, Clone)]
 pub struct PPCAConfig {
     pub n_components: usize,
     pub max_iterations: usize,
     pub tol: f64,
     pub random_state: Option<u64>,
-    /// Per-component sign constraints for the loadings.
-    /// +1 = column mean must be positive, -1 = negative, 0 = unconstrained.
-    pub loading_signs: Option<Vec<i8>>,
+    pub noise_type: NoiseType,
+    /// Ridge penalty λ on W (adds λI to second-moment in M-step).
+    pub l2_penalty: f64,
 }
 
 impl Default for PPCAConfig {
@@ -27,32 +48,61 @@ impl Default for PPCAConfig {
             max_iterations: 100,
             tol: 1e-4,
             random_state: None,
-            loading_signs: None,
+            noise_type: NoiseType::Isotropic,
+            l2_penalty: 0.0,
         }
     }
 }
 
-/// Result of PPCA fitting
 #[derive(Debug, Clone)]
 pub struct PPCAResult {
-    /// Loading matrix (n_features x n_components)
+    /// Loading matrix W: n_features × n_components.
     pub loadings: DMatrix<f64>,
-    /// Noise variance
-    pub sigma2: f64,
-    /// Mean of the training data
+    /// Per-feature noise variances (uniform when isotropic).
+    pub noise_variances: DVector<f64>,
+    /// Training-data mean (computed from observed values).
     pub mean: DVector<f64>,
-    /// Explained variance ratio
+    /// Explained variance ratio per component.
     pub explained_variance_ratio: DVector<f64>,
+    /// Number of EM iterations actually run.
+    pub n_iter: usize,
+    /// Observed-data log-likelihood after each iteration.
+    pub log_likelihoods: Vec<f64>,
 }
 
-/// Probabilistic Principal Component Analysis model
+// ── PPCA model ──────────────────────────────────────────────────────────────
+
 pub struct PPCA {
     config: PPCAConfig,
     result: Option<PPCAResult>,
 }
 
+/// A group of samples that share the same observation pattern.
+struct PatternGroup {
+    /// Row indices in X_centered belonging to this pattern.
+    sample_indices: Vec<usize>,
+    /// Sorted observed-feature indices.
+    obs_indices: Vec<usize>,
+}
+
+/// Precomputed quantities for one observation pattern in the E-step.
+struct PatternEStep {
+    /// Posterior covariance Σ = M^{-1}, shape d × d.
+    sigma: DMatrix<f64>,
+    /// Σ W_o^T Ψ_o^{-1}, shape d × |O|.  Pre-multiply with x_o to get μ.
+    sigma_wt_psi_inv: DMatrix<f64>,
+    /// Log-likelihood constant for this pattern:
+    ///   -|O|/2 log(2π) - 1/2 log|C_o|
+    ll_const: f64,
+    /// Ψ_o^{-1} (I - W_o Σ W_o^T Ψ_o^{-1}), shape |O| × |O|.
+    /// C_o^{-1} via Woodbury, for the quadratic form in the log-likelihood.
+    c_inv: DMatrix<f64>,
+}
+
+const MIN_VARIANCE: f64 = 1e-6;
+const LOG_2PI: f64 = 1.8378770664093453; // ln(2π)
+
 impl PPCA {
-    /// Create a new PPCA model with default configuration
     pub fn new(n_components: usize) -> Self {
         let mut config = PPCAConfig::default();
         config.n_components = n_components;
@@ -62,7 +112,6 @@ impl PPCA {
         }
     }
 
-    /// Create a new PPCA model with custom configuration
     pub fn with_config(config: PPCAConfig) -> Self {
         PPCA {
             config,
@@ -70,475 +119,659 @@ impl PPCA {
         }
     }
 
-    /// Fit the PPCA model to data with missing values
-    ///
-    /// # Arguments
-    /// * `X` - Data matrix (n_samples x n_features)
-    /// * `mask` - Boolean mask where true indicates missing values
-    pub fn fit(&mut self, X: &DMatrix<f64>, mask: &DMatrix<bool>) -> Result<()> {
-        let (n_samples, n_features) = X.shape();
+    // ── Fit ──────────────────────────────────────────────────────────────
 
-        if n_samples == 0 || n_features == 0 {
+    pub fn fit(&mut self, x: &DMatrix<f64>, mask: &DMatrix<bool>) -> Result<()> {
+        let (n, p) = x.shape();
+        let d = self.config.n_components;
+
+        if n == 0 || p == 0 {
             return Err(PPCAError::NoDimensionality);
         }
-
-        if self.config.n_components > n_features {
+        if d > p {
             return Err(PPCAError::InvalidComponents {
-                n_components: self.config.n_components,
-                n_features,
+                n_components: d,
+                n_features: p,
             });
         }
 
-        // Center the data, setting missing entries to 0.0 so they don't
-        // contribute to matrix products in the M-step.
-        let mean = self.compute_mean(X, mask)?;
-        let mut X_centered = X.clone();
-        for i in 0..n_samples {
-            for j in 0..n_features {
-                if mask[(i, j)] {
-                    X_centered[(i, j)] = 0.0;
-                } else {
-                    X_centered[(i, j)] = X[(i, j)] - mean[j];
-                }
-            }
-        }
+        // ── Mean & centering ────────────────────────────────────────────
+        let mean = compute_mean(x, mask);
+        let x_c = center(x, mask, &mean);
 
-        // Precompute per-sample observed indices — the mask is constant across iterations.
-        let obs_by_sample: Vec<Vec<usize>> = (0..n_samples)
-            .map(|i| (0..n_features).filter(|&j| !mask[(i, j)]).collect())
-            .collect();
+        // ── Observation-pattern groups ──────────────────────────────────
+        let groups = build_pattern_groups(mask, n, p);
 
-        // Initialise W and sigma2.
-        // Default: PCA on mean-imputed data — places W near the optimum so EM
-        // converges in tens of iterations rather than thousands.
-        // random_state=Some(seed): random init (for explicit reproducibility testing).
-        let (mut loadings, mut sigma2) = match self.config.random_state {
+        // ── Initialisation ──────────────────────────────────────────────
+        let (mut w, sigma2_init) = match self.config.random_state {
             Some(seed) => {
                 let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
-                let w = DMatrix::from_fn(n_features, self.config.n_components, |_, _| {
-                    rng.gen::<f64>()
-                });
-                (w, 1.0_f64)
+                let w = DMatrix::from_fn(p, d, |_, _| rng.gen::<f64>() - 0.5);
+                (w, 1.0)
             }
-            None => self.pca_init(&X_centered)?,
+            None => pca_init(&x_c, d)?,
         };
+        let mut psi = DVector::from_element(p, sigma2_init);
 
-        // Run EM algorithm
-        for _iteration in 0..self.config.max_iterations {
-            let old_loadings = loadings.clone();
+        // ── EM loop ─────────────────────────────────────────────────────
+        let mut log_likelihoods = Vec::with_capacity(self.config.max_iterations);
+        let mut n_iter = 0usize;
 
-            // E-step: per-sample posterior mean (mu_i) and covariance factor (M_i^{-1})
-            let (expectations, posterior_covs) =
-                self.e_step(&X_centered, &loadings, sigma2, &obs_by_sample)?;
+        for _iter in 0..self.config.max_iterations {
+            n_iter += 1;
 
-            // M-step: update W and sigma2 using per-sample posterior quantities
-            let (new_loadings, new_sigma2) =
-                self.m_step(&X_centered, &expectations, &posterior_covs, sigma2, &obs_by_sample)?;
+            // E-step (per pattern)
+            let pattern_esteps: Vec<PatternEStep> = groups
+                .iter()
+                .map(|g| e_step_pattern(&w, &psi, &g.obs_indices, d))
+                .collect::<Result<Vec<_>>>()?;
 
-            loadings = new_loadings;
-            sigma2 = new_sigma2;
+            // Posterior means  μ_i  (n × d, row-major vec for speed)
+            let mu = compute_posterior_means(&x_c, &groups, &pattern_esteps, n, d);
 
-            // Convergence: relative change in loadings (Frobenius norm)
-            let delta = (&loadings - &old_loadings).norm();
-            let scale = old_loadings.norm().max(1e-10);
-            if delta / scale < self.config.tol {
-                break;
-            }
-        }
+            // Observed-data log-likelihood
+            let ll = compute_log_likelihood(&x_c, &groups, &pattern_esteps);
+            log_likelihoods.push(ll);
 
-        // Apply sign identification constraints to resolved rotational ambiguity
-        if let Some(ref signs) = self.config.loading_signs {
-            for (k, &sign) in signs.iter().enumerate() {
-                if sign != 0 && k < self.config.n_components {
-                    let col_sum: f64 = (0..n_features).map(|j| loadings[(j, k)]).sum();
-                    let needs_flip = (sign > 0 && col_sum < 0.0) || (sign < 0 && col_sum > 0.0);
-                    if needs_flip {
-                        for j in 0..n_features {
-                            loadings[(j, k)] *= -1.0;
-                        }
-                    }
+            // M-step
+            let (w_new, psi_new) = m_step(
+                &x_c,
+                &mu,
+                &groups,
+                &pattern_esteps,
+                &self.config,
+                n,
+                p,
+                d,
+            );
+            w = w_new;
+            psi = psi_new;
+
+            // Convergence on relative LL change
+            if log_likelihoods.len() >= 2 {
+                let prev = log_likelihoods[log_likelihoods.len() - 2];
+                let curr = ll;
+                let denom = prev.abs().max(1.0);
+                if ((curr - prev) / denom).abs() < self.config.tol {
+                    break;
                 }
             }
         }
 
-        // Compute explained variance
-        let explained_variance = self.compute_explained_variance(&loadings, sigma2, n_features)?;
+        let evr = compute_explained_variance(&w, &psi);
 
         self.result = Some(PPCAResult {
-            loadings,
-            sigma2,
+            loadings: w,
+            noise_variances: psi,
             mean,
-            explained_variance_ratio: explained_variance,
+            explained_variance_ratio: evr,
+            n_iter,
+            log_likelihoods,
         });
 
         Ok(())
     }
 
-    /// Transform data using the fitted model
-    pub fn transform(&self, X: &DMatrix<f64>) -> Result<DMatrix<f64>> {
-        let result = self.result.as_ref().ok_or(PPCAError::NoDimensionality)?;
+    // ── Transform ────────────────────────────────────────────────────────
 
-        let (n_samples, n_features) = X.shape();
-        if n_features != result.mean.len() {
+    pub fn transform(&self, x: &DMatrix<f64>) -> Result<DMatrix<f64>> {
+        let r = self.result.as_ref().ok_or(PPCAError::NoDimensionality)?;
+        let (n, p) = x.shape();
+        if p != r.mean.len() {
             return Err(PPCAError::InvalidDimensions {
-                expected: result.mean.len(),
-                got: n_features,
+                expected: r.mean.len(),
+                got: p,
             });
         }
 
-        let X_centered = {
-            let mut centered = X.clone();
-            for i in 0..n_samples {
-                for j in 0..n_features {
-                    let v = X[(i, j)];
-                    centered[(i, j)] = if v.is_nan() { 0.0 } else { v - result.mean[j] };
+        let d = self.config.n_components;
+
+        // Center (NaN → 0)
+        let x_c = {
+            let mut m = DMatrix::zeros(n, p);
+            for i in 0..n {
+                for j in 0..p {
+                    let v = x[(i, j)];
+                    m[(i, j)] = if v.is_nan() { 0.0 } else { v - r.mean[j] };
                 }
             }
-            centered
+            m
         };
 
-        // Project onto principal components: Y = X @ W @ (W^T @ W + sigma2 * I)^-1
-        let WtW = result.loadings.transpose() * &result.loadings;
-        let sigma2_I = DMatrix::from_diagonal(&DVector::from_element(
-            self.config.n_components,
-            result.sigma2,
-        ));
-        let M = WtW + sigma2_I;
-
-        // Compute inverse (Cholesky decomposition)
-        let M_inv = self.matrix_inverse(&M)?;
-
-        let Y = &X_centered * &result.loadings * &M_inv;
-        Ok(Y)
+        // E[z|x] = M^{-1} W^T Ψ^{-1} x_c  where M = I + W^T Ψ^{-1} W
+        let psi_inv = r.noise_variances.map(|v| 1.0 / v.max(MIN_VARIANCE));
+        // Ψ^{-1} W  (p × d)
+        let psi_inv_w = DMatrix::from_fn(p, d, |j, l| r.loadings[(j, l)] * psi_inv[j]);
+        // M = I + W^T Ψ^{-1} W  (d × d)
+        let m_mat = DMatrix::identity(d, d) + r.loadings.transpose() * &psi_inv_w;
+        let m_inv = chol_inv(&m_mat)?;
+        // (n × p) × (p × d) × (d × d) → (n × d)
+        Ok(&x_c * &psi_inv_w * &m_inv)
     }
 
-    /// Reconstruct data from latent representation
-    pub fn inverse_transform(&self, Y: &DMatrix<f64>) -> Result<DMatrix<f64>> {
-        let result = self.result.as_ref().ok_or(PPCAError::NoDimensionality)?;
+    // ── Inverse transform ────────────────────────────────────────────────
 
-        let (n_samples, n_components) = Y.shape();
-        if n_components != self.config.n_components {
+    pub fn inverse_transform(&self, y: &DMatrix<f64>) -> Result<DMatrix<f64>> {
+        let r = self.result.as_ref().ok_or(PPCAError::NoDimensionality)?;
+        let (n, k) = y.shape();
+        if k != self.config.n_components {
             return Err(PPCAError::InvalidDimensions {
                 expected: self.config.n_components,
-                got: n_components,
+                got: k,
             });
         }
-
-        // Reconstruct: X_reconstructed = Y @ W^T + mean
-        let X_reconstructed = Y * result.loadings.transpose();
-        let X_with_mean = &X_reconstructed + DMatrix::from_element(n_samples, result.mean.len(), 1.0)
-            .component_mul(&DMatrix::from_fn(n_samples, result.mean.len(), |_, j| result.mean[j]));
-
-        Ok(X_with_mean)
+        let p = r.mean.len();
+        // X = Y W^T + 1 μ^T
+        let mut out = y * r.loadings.transpose();
+        for i in 0..n {
+            for j in 0..p {
+                out[(i, j)] += r.mean[j];
+            }
+        }
+        Ok(out)
     }
 
-    /// Compute reconstruction error for data with potential missing values
-    pub fn reconstruction_error(
-        &self,
-        X: &DMatrix<f64>,
-        mask: &DMatrix<bool>,
-    ) -> Result<f64> {
-        let Y = self.transform(X)?;
-        let X_reconstructed = self.inverse_transform(&Y)?;
+    // ── Reconstruction error ─────────────────────────────────────────────
 
-        let mut error = 0.0;
-        let mut count = 0.0;
-
-        for i in 0..X.nrows() {
-            for j in 0..X.ncols() {
+    pub fn reconstruction_error(&self, x: &DMatrix<f64>, mask: &DMatrix<bool>) -> Result<f64> {
+        let y = self.transform(x)?;
+        let x_hat = self.inverse_transform(&y)?;
+        let mut err = 0.0;
+        let mut cnt = 0.0;
+        for i in 0..x.nrows() {
+            for j in 0..x.ncols() {
                 if !mask[(i, j)] {
-                    let diff = X[(i, j)] - X_reconstructed[(i, j)];
-                    error += diff * diff;
-                    count += 1.0;
+                    let d = x[(i, j)] - x_hat[(i, j)];
+                    err += d * d;
+                    cnt += 1.0;
                 }
             }
         }
-
-        Ok(if count > 0.0 { error / count } else { 0.0 })
+        Ok(if cnt > 0.0 { err / cnt } else { 0.0 })
     }
 
-    // Private helper methods
+    // ── Accessors ────────────────────────────────────────────────────────
 
-    fn compute_mean(&self, X: &DMatrix<f64>, mask: &DMatrix<bool>) -> Result<DVector<f64>> {
-        let n_features = X.ncols();
-        let mut mean: DVector<f64> = DVector::zeros(n_features);
-        let mut counts: DVector<f64> = DVector::zeros(n_features);
-
-        for i in 0..X.nrows() {
-            for j in 0..n_features {
-                if !mask[(i, j)] {
-                    mean[j] += X[(i, j)];
-                    counts[j] += 1.0;
-                }
-            }
-        }
-
-        for j in 0..n_features {
-            if counts[j] > 0.0 {
-                mean[j] /= counts[j];
-            }
-        }
-
-        Ok(mean)
-    }
-
-    /// PCA initialisation: compute W and sigma2 from the top-d SVD of the
-    /// (mean-imputed) centred data.  Missing entries are already 0 in X_centered.
-    fn pca_init(&self, X_centered: &DMatrix<f64>) -> Result<(DMatrix<f64>, f64)> {
-        let (n_samples, n_features) = X_centered.shape();
-        let d = self.config.n_components;
-
-        // Full SVD of X_centered (n x p).  V_t rows are the principal directions,
-        // singular values^2 / n are the sample covariance eigenvalues.
-        let svd = SVD::new(X_centered.clone(), false, true);
-        let sv = &svd.singular_values;
-        let v_t = svd.v_t.as_ref().ok_or(PPCAError::MatrixError("SVD V^T unavailable".to_string()))?;
-
-        // Initial sigma2: average eigenvalue of non-principal directions.
-        let sigma2_init = if n_features > d {
-            let tail: f64 = sv.iter().skip(d).map(|s| s * s / n_samples as f64).sum();
-            (tail / (n_features - d) as f64).max(1e-6)
-        } else {
-            1e-3
-        };
-
-        // W_init[:, k] = v_k * sqrt(max(lambda_k - sigma2, eps))
-        let mut w_init = DMatrix::zeros(n_features, d);
-        for k in 0..d {
-            let lambda_k = sv[k] * sv[k] / n_samples as f64;
-            let scale = (lambda_k - sigma2_init).max(1e-6).sqrt();
-            for j in 0..n_features {
-                w_init[(j, k)] = v_t[(k, j)] * scale;
-            }
-        }
-
-        Ok((w_init, sigma2_init))
-    }
-
-    fn e_step(
-        &self,
-        X_centered: &DMatrix<f64>,
-        W: &DMatrix<f64>,
-        sigma2: f64,
-        obs_by_sample: &[Vec<usize>],
-    ) -> Result<(Vec<DVector<f64>>, Vec<DMatrix<f64>>)> {
-        let n_samples = X_centered.nrows();
-        let d = self.config.n_components;
-        let sigma2_I = DMatrix::from_diagonal(&DVector::from_element(d, sigma2));
-
-        let mut expectations = Vec::with_capacity(n_samples);
-        let mut posterior_covs = Vec::with_capacity(n_samples); // M_i^{-1} per sample
-
-        for i in 0..n_samples {
-            let obs_idx = &obs_by_sample[i];
-
-            if obs_idx.is_empty() {
-                // No observations: posterior equals prior  E[z]=0, Cov[z|x]=I
-                expectations.push(DVector::zeros(d));
-                posterior_covs.push(DMatrix::identity(d, d));
-                continue;
-            }
-
-            let n_obs = obs_idx.len();
-            let mut W_obs = DMatrix::zeros(n_obs, d);
-            let mut x_obs = DVector::zeros(n_obs);
-            for (k, &j) in obs_idx.iter().enumerate() {
-                x_obs[k] = X_centered[(i, j)];
-                for l in 0..d {
-                    W_obs[(k, l)] = W[(j, l)];
-                }
-            }
-
-            // M_i = W_obs^T W_obs + sigma2 * I  (d x d)
-            let WtW = W_obs.transpose() * &W_obs;
-            let M_i = WtW + &sigma2_I;
-            let M_i_inv = M_i
-                .try_inverse()
-                .ok_or(PPCAError::MatrixError("Cannot invert M_i in E-step".to_string()))?;
-
-            // E[z_i | x_i^obs] = M_i^{-1} W_obs^T x_obs
-            let mu_i = &M_i_inv * W_obs.transpose() * &x_obs;
-
-            expectations.push(mu_i);
-            posterior_covs.push(M_i_inv);
-        }
-
-        Ok((expectations, posterior_covs))
-    }
-
-    fn m_step(
-        &self,
-        X_centered: &DMatrix<f64>,
-        expectations: &[DVector<f64>],
-        posterior_covs: &[DMatrix<f64>], // M_i^{-1} from E-step
-        sigma2: f64,
-        obs_by_sample: &[Vec<usize>],
-    ) -> Result<(DMatrix<f64>, f64)> {
-        let (n_samples, n_features) = X_centered.shape();
-        let d = self.config.n_components;
-
-        // Precompute E[z_i z_i^T | x_i^obs] = mu_i mu_i^T + sigma2 * M_i^{-1}
-        // This is reused for every feature in the W update.
-        let second_moments: Vec<DMatrix<f64>> = (0..n_samples)
-            .map(|i| {
-                let mu = &expectations[i];
-                let m_inv = &posterior_covs[i];
-                mu * mu.transpose() + sigma2 * m_inv
-            })
-            .collect();
-
-        // Accumulate xz[j] = Σ_{i: j observed} x_ij mu_i
-        //            zz[j] = Σ_{i: j observed} E[z_i z_i^T]
-        // Outer loop over samples so each second_moments[i] is loaded once.
-        let mut xz = vec![DVector::<f64>::zeros(d); n_features];
-        let mut zz = vec![DMatrix::<f64>::zeros(d, d); n_features];
-
-        for i in 0..n_samples {
-            let mu_i = &expectations[i];
-            let A_i = &second_moments[i];
-            for &j in &obs_by_sample[i] {
-                xz[j] += X_centered[(i, j)] * mu_i;
-                zz[j] += A_i;
-            }
-        }
-
-        // W update: W_j = zz[j]^{-1} xz[j]
-        let mut W = DMatrix::zeros(n_features, d);
-        for j in 0..n_features {
-            let zz_inv = zz[j]
-                .clone()
-                .try_inverse()
-                .ok_or(PPCAError::MatrixError("Cannot invert second-moment matrix for feature".to_string()))?;
-            let w_j = zz_inv * &xz[j];
-            for l in 0..d {
-                W[(j, l)] = w_j[l];
-            }
-        }
-
-        // sigma2 update (using NEW W, OLD M_i^{-1}):
-        //   sigma2_new = (1/N_obs) * Σ_{i,j∈O_i}
-        //                  [ (x_ij - W_j^T mu_i)^2  +  sigma2_old * W_j^T M_i^{-1} W_j ]
-        let mut sigma2_num = 0.0_f64;
-        let mut n_observed = 0usize;
-
-        for i in 0..n_samples {
-            let obs_idx = &obs_by_sample[i];
-            if obs_idx.is_empty() {
-                continue;
-            }
-
-            let mu_i = &expectations[i];
-            let M_inv_i = &posterior_covs[i];
-            let n_obs = obs_idx.len();
-
-            let mut W_obs = DMatrix::zeros(n_obs, d);
-            let mut x_obs = DVector::zeros(n_obs);
-            for (k, &j) in obs_idx.iter().enumerate() {
-                x_obs[k] = X_centered[(i, j)];
-                for l in 0..d {
-                    W_obs[(k, l)] = W[(j, l)];
-                }
-            }
-
-            // Squared residuals: ||x_obs - W_obs mu_i||^2
-            let residual = &x_obs - &W_obs * mu_i;
-            sigma2_num += residual.norm_squared();
-
-            // Trace correction: sigma2_old * trace(M_i^{-1} W_obs^T W_obs)
-            let WtW_obs = W_obs.transpose() * &W_obs;
-            sigma2_num += sigma2 * (M_inv_i * WtW_obs).trace();
-
-            n_observed += n_obs;
-        }
-
-        let sigma2_new = if n_observed > 0 {
-            (sigma2_num / n_observed as f64).max(1e-6)
-        } else {
-            sigma2
-        };
-
-        Ok((W, sigma2_new))
-    }
-
-    fn compute_explained_variance(
-        &self,
-        W: &DMatrix<f64>,
-        sigma2: f64,
-        n_features: usize,
-    ) -> Result<DVector<f64>> {
-        let WtW = W.transpose() * W;
-        let svd = SVD::new(WtW, false, false);
-
-        // Eigenvalues of W^T W = variance attributable to each latent direction.
-        // Total model variance = trace(W^T W) + p * sigma2  (always sums to <= 1 by construction).
-        let signal_variances = svd.singular_values;
-        let total_variance = signal_variances.iter().sum::<f64>() + n_features as f64 * sigma2;
-        let variance_ratio = if total_variance > 0.0 {
-            signal_variances / total_variance
-        } else {
-            DVector::from_element(signal_variances.len(), 1.0 / signal_variances.len() as f64)
-        };
-
-        Ok(variance_ratio)
-    }
-
-    fn matrix_inverse(&self, M: &DMatrix<f64>) -> Result<DMatrix<f64>> {
-        M.clone().try_inverse()
-            .ok_or(PPCAError::MatrixError("Matrix is singular".to_string()))
-    }
-
-    /// Get the explained variance ratio from the fitted model
-    pub fn explained_variance_ratio(&self) -> Result<&DVector<f64>> {
+    pub fn result(&self) -> Option<&PPCAResult> {
         self.result.as_ref()
+    }
+
+    pub fn explained_variance_ratio(&self) -> Result<&DVector<f64>> {
+        self.result
+            .as_ref()
             .map(|r| &r.explained_variance_ratio)
             .ok_or(PPCAError::NoDimensionality)
     }
 
-    /// Get the noise variance from the fitted model
     pub fn noise_variance(&self) -> Result<f64> {
-        self.result.as_ref()
-            .map(|r| r.sigma2)
+        self.result
+            .as_ref()
+            .map(|r| r.noise_variances.sum() / r.noise_variances.len() as f64)
+            .ok_or(PPCAError::NoDimensionality)
+    }
+
+    pub fn noise_variances(&self) -> Result<&DVector<f64>> {
+        self.result
+            .as_ref()
+            .map(|r| &r.noise_variances)
+            .ok_or(PPCAError::NoDimensionality)
+    }
+
+    pub fn n_iter(&self) -> Result<usize> {
+        self.result
+            .as_ref()
+            .map(|r| r.n_iter)
+            .ok_or(PPCAError::NoDimensionality)
+    }
+
+    pub fn log_likelihoods(&self) -> Result<&Vec<f64>> {
+        self.result
+            .as_ref()
+            .map(|r| &r.log_likelihoods)
             .ok_or(PPCAError::NoDimensionality)
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Free functions
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn compute_mean(x: &DMatrix<f64>, mask: &DMatrix<bool>) -> DVector<f64> {
+    let p = x.ncols();
+    let mut mean = DVector::zeros(p);
+    let mut counts = DVector::<f64>::zeros(p);
+    for i in 0..x.nrows() {
+        for j in 0..p {
+            if !mask[(i, j)] {
+                mean[j] += x[(i, j)];
+                counts[j] += 1.0;
+            }
+        }
+    }
+    for j in 0..p {
+        if counts[j] > 0.0 {
+            mean[j] /= counts[j];
+        }
+    }
+    mean
+}
+
+fn center(x: &DMatrix<f64>, mask: &DMatrix<bool>, mean: &DVector<f64>) -> DMatrix<f64> {
+    let (n, p) = x.shape();
+    let mut out = DMatrix::zeros(n, p);
+    for i in 0..n {
+        for j in 0..p {
+            if !mask[(i, j)] {
+                out[(i, j)] = x[(i, j)] - mean[j];
+            }
+            // missing → 0.0 (already zero)
+        }
+    }
+    out
+}
+
+/// Build observation-pattern groups.  Samples with identical sets of
+/// observed features share a `PatternGroup`.
+fn build_pattern_groups(mask: &DMatrix<bool>, n: usize, p: usize) -> Vec<PatternGroup> {
+    let mut map: HashMap<Vec<usize>, Vec<usize>> = HashMap::new();
+    for i in 0..n {
+        let obs: Vec<usize> = (0..p).filter(|&j| !mask[(i, j)]).collect();
+        map.entry(obs).or_default().push(i);
+    }
+    map.into_iter()
+        .map(|(obs_indices, sample_indices)| PatternGroup {
+            sample_indices,
+            obs_indices,
+        })
+        .collect()
+}
+
+/// PCA warm-start: SVD of (mean-imputed) centred data.
+fn pca_init(x_c: &DMatrix<f64>, d: usize) -> Result<(DMatrix<f64>, f64)> {
+    let (n, p) = x_c.shape();
+    let svd = SVD::new(x_c.clone(), false, true);
+    let sv = &svd.singular_values;
+    let v_t = svd
+        .v_t
+        .as_ref()
+        .ok_or(PPCAError::MatrixError("SVD V^T unavailable".into()))?;
+
+    let sigma2 = if p > d {
+        let tail: f64 = sv.iter().skip(d).map(|s| s * s / n as f64).sum();
+        (tail / (p - d) as f64).max(MIN_VARIANCE)
+    } else {
+        1e-3
+    };
+
+    let n_sv = sv.len();
+    let mut w = DMatrix::zeros(p, d);
+    for k in 0..d.min(n_sv) {
+        let lam = sv[k] * sv[k] / n as f64;
+        let scale = (lam - sigma2).max(MIN_VARIANCE).sqrt();
+        for j in 0..p {
+            w[(j, k)] = v_t[(k, j)] * scale;
+        }
+    }
+    Ok((w, sigma2))
+}
+
+/// E-step quantities for one observation pattern.
+fn e_step_pattern(
+    w: &DMatrix<f64>,
+    psi: &DVector<f64>,
+    obs: &[usize],
+    d: usize,
+) -> Result<PatternEStep> {
+    let n_obs = obs.len();
+
+    if n_obs == 0 {
+        // No observations → prior: Σ = I, ll_const = 0.
+        return Ok(PatternEStep {
+            sigma: DMatrix::identity(d, d),
+            sigma_wt_psi_inv: DMatrix::zeros(d, 0),
+            ll_const: 0.0,
+            c_inv: DMatrix::zeros(0, 0),
+        });
+    }
+
+    // W_o (|O| × d), psi_inv_o (|O|)
+    let mut w_o = DMatrix::zeros(n_obs, d);
+    let mut psi_inv_o = DVector::zeros(n_obs);
+    let mut log_psi_sum = 0.0;
+    for (k, &j) in obs.iter().enumerate() {
+        let pv = psi[j].max(MIN_VARIANCE);
+        psi_inv_o[k] = 1.0 / pv;
+        log_psi_sum += pv.ln();
+        for l in 0..d {
+            w_o[(k, l)] = w[(j, l)];
+        }
+    }
+
+    // Ψ_o^{-1} W_o  (|O| × d)
+    let psi_inv_wo = DMatrix::from_fn(n_obs, d, |k, l| w_o[(k, l)] * psi_inv_o[k]);
+
+    // M = I + W_o^T Ψ_o^{-1} W_o  (d × d)
+    let m_mat = DMatrix::identity(d, d) + w_o.transpose() * &psi_inv_wo;
+    let sigma = chol_inv(&m_mat)?;
+
+    // Σ W_o^T Ψ_o^{-1}  (d × |O|)
+    let sigma_wt_psi_inv = &sigma * psi_inv_wo.transpose();
+
+    // log|C_o| = log|M| + Σ log(ψ_j)
+    let log_det_m = chol_log_det(&m_mat);
+    let log_det_c = log_det_m + log_psi_sum;
+    let ll_const = -0.5 * (n_obs as f64 * LOG_2PI + log_det_c);
+
+    // C_o^{-1} via Woodbury: Ψ_o^{-1} - Ψ_o^{-1} W_o Σ W_o^T Ψ_o^{-1}
+    // = diag(ψ_inv_o) - psi_inv_wo Σ psi_inv_wo^T
+    let psi_inv_wo_sigma = &psi_inv_wo * &sigma; // |O| × d
+    let correction = &psi_inv_wo_sigma * psi_inv_wo.transpose(); // |O| × |O|
+    let mut c_inv = DMatrix::zeros(n_obs, n_obs);
+    for k in 0..n_obs {
+        c_inv[(k, k)] = psi_inv_o[k];
+    }
+    c_inv -= &correction;
+
+    Ok(PatternEStep {
+        sigma,
+        sigma_wt_psi_inv,
+        ll_const,
+        c_inv,
+    })
+}
+
+/// Compute posterior means for all samples (n × d matrix stored as DMatrix).
+fn compute_posterior_means(
+    x_c: &DMatrix<f64>,
+    groups: &[PatternGroup],
+    esteps: &[PatternEStep],
+    n: usize,
+    d: usize,
+) -> DMatrix<f64> {
+    let mut mu = DMatrix::zeros(n, d);
+    for (g, es) in groups.iter().zip(esteps.iter()) {
+        if g.obs_indices.is_empty() {
+            continue;
+        }
+        // Build X_o for the whole group:  (|group| × |O|)
+        let n_grp = g.sample_indices.len();
+        let n_obs = g.obs_indices.len();
+        let mut x_o = DMatrix::zeros(n_grp, n_obs);
+        for (gi, &si) in g.sample_indices.iter().enumerate() {
+            for (k, &j) in g.obs_indices.iter().enumerate() {
+                x_o[(gi, k)] = x_c[(si, j)];
+            }
+        }
+        // mu_group = X_o × (Σ W_o^T Ψ_o^{-1})^T  →  (|group| × d)
+        let mu_group = &x_o * es.sigma_wt_psi_inv.transpose();
+        for (gi, &si) in g.sample_indices.iter().enumerate() {
+            for l in 0..d {
+                mu[(si, l)] = mu_group[(gi, l)];
+            }
+        }
+    }
+    mu
+}
+
+/// Observed-data log-likelihood.
+fn compute_log_likelihood(
+    x_c: &DMatrix<f64>,
+    groups: &[PatternGroup],
+    esteps: &[PatternEStep],
+) -> f64 {
+    let mut ll = 0.0;
+    for (g, es) in groups.iter().zip(esteps.iter()) {
+        if g.obs_indices.is_empty() {
+            continue;
+        }
+        let n_obs = g.obs_indices.len();
+        for &si in &g.sample_indices {
+            // x_o for this sample
+            let mut x_o = DVector::zeros(n_obs);
+            for (k, &j) in g.obs_indices.iter().enumerate() {
+                x_o[k] = x_c[(si, j)];
+            }
+            // quadratic: x_o^T C_o^{-1} x_o
+            let quad = x_o.dot(&(&es.c_inv * &x_o));
+            ll += es.ll_const - 0.5 * quad;
+        }
+    }
+    ll
+}
+
+/// M-step: update W and ψ.
+fn m_step(
+    x_c: &DMatrix<f64>,
+    mu: &DMatrix<f64>,
+    groups: &[PatternGroup],
+    esteps: &[PatternEStep],
+    config: &PPCAConfig,
+    _n: usize,
+    p: usize,
+    d: usize,
+) -> (DMatrix<f64>, DVector<f64>) {
+    // Per-feature accumulators for W update:
+    //   xz[j] = Σ_{i: j obs} x_ij μ_i    (d-vector)
+    //   zz[j] = Σ_{i: j obs} A_i          (d × d matrix)
+    // where A_i = μ_i μ_i^T + Σ_i  (Σ_i shared within pattern group)
+    let mut xz = vec![DVector::<f64>::zeros(d); p];
+    let mut zz = vec![DMatrix::<f64>::zeros(d, d); p];
+
+    for (g, es) in groups.iter().zip(esteps.iter()) {
+        for &si in &g.sample_indices {
+            let mu_i = mu.row(si).transpose(); // d × 1
+            let a_i = &mu_i * mu_i.transpose() + &es.sigma; // d × d
+            for &j in &g.obs_indices {
+                let x_ij = x_c[(si, j)];
+                // xz[j] += x_ij * μ_i
+                xz[j] += x_ij * &mu_i;
+                // zz[j] += A_i
+                zz[j] += &a_i;
+            }
+        }
+    }
+
+    // W update: W[j,:] = xz[j]^T (zz[j] + λI)^{-1}
+    let lambda_i = config.l2_penalty * DMatrix::<f64>::identity(d, d);
+    let mut w_new = DMatrix::zeros(p, d);
+    for j in 0..p {
+        let zz_reg = &zz[j] + &lambda_i;
+        if let Some(inv) = zz_reg.try_inverse() {
+            let w_j = &inv * &xz[j];
+            for l in 0..d {
+                w_new[(j, l)] = w_j[l];
+            }
+        }
+        // If inversion fails, row stays zero (rare edge case).
+    }
+
+    // Noise update: ψ_j = (1/n_j) Σ_{i:j obs} [(x_ij - w_j^T μ_i)² + w_j^T Σ_i w_j]
+    let mut psi_num = DVector::<f64>::zeros(p);
+    let mut psi_cnt = DVector::<f64>::zeros(p);
+
+    for (g, es) in groups.iter().zip(esteps.iter()) {
+        // Precompute w_j^T Σ w_j for each observed feature in this pattern
+        // (shared across samples in the group).
+        let wt_sigma_w: Vec<f64> = g
+            .obs_indices
+            .iter()
+            .map(|&j| {
+                let w_j: DVector<f64> = w_new.row(j).transpose();
+                w_j.dot(&(&es.sigma * &w_j))
+            })
+            .collect();
+
+        for &si in &g.sample_indices {
+            let mu_i = mu.row(si).transpose();
+            for (ki, &j) in g.obs_indices.iter().enumerate() {
+                let w_j: DVector<f64> = w_new.row(j).transpose();
+                let resid = x_c[(si, j)] - w_j.dot(&mu_i);
+                psi_num[j] += resid * resid + wt_sigma_w[ki];
+                psi_cnt[j] += 1.0;
+            }
+        }
+    }
+
+    let psi_new = match config.noise_type {
+        NoiseType::Isotropic => {
+            let total_num: f64 = psi_num.iter().sum();
+            let total_cnt: f64 = psi_cnt.iter().sum();
+            let sigma2 = if total_cnt > 0.0 {
+                (total_num / total_cnt).max(MIN_VARIANCE)
+            } else {
+                MIN_VARIANCE
+            };
+            DVector::from_element(p, sigma2)
+        }
+        NoiseType::Diagonal => DVector::from_fn(p, |j, _| {
+            if psi_cnt[j] > 0.0 {
+                (psi_num[j] / psi_cnt[j]).max(MIN_VARIANCE)
+            } else {
+                MIN_VARIANCE
+            }
+        }),
+    };
+
+    (w_new, psi_new)
+}
+
+/// Explained variance ratio from W^T W eigenvalues.
+fn compute_explained_variance(w: &DMatrix<f64>, psi: &DVector<f64>) -> DVector<f64> {
+    let wtw = w.transpose() * w;
+    let svd = SVD::new(wtw, false, false);
+    let eigenvalues = svd.singular_values;
+    let noise_sum: f64 = psi.iter().sum();
+    let total = eigenvalues.iter().sum::<f64>() + noise_sum;
+    if total > 0.0 {
+        eigenvalues / total
+    } else {
+        DVector::from_element(eigenvalues.len(), 1.0 / eigenvalues.len() as f64)
+    }
+}
+
+// ── Linear algebra helpers ──────────────────────────────────────────────────
+
+/// Invert a symmetric positive-definite matrix via Cholesky.
+/// Falls back to regular inverse if Cholesky fails.
+fn chol_inv(m: &DMatrix<f64>) -> Result<DMatrix<f64>> {
+    if let Some(chol) = m.clone().cholesky() {
+        Ok(chol.inverse())
+    } else {
+        m.clone()
+            .try_inverse()
+            .ok_or(PPCAError::MatrixError("Singular matrix".into()))
+    }
+}
+
+/// Log-determinant of a symmetric positive-definite matrix via Cholesky.
+fn chol_log_det(m: &DMatrix<f64>) -> f64 {
+    if let Some(chol) = m.clone().cholesky() {
+        let l = chol.l();
+        let d = l.nrows();
+        let mut ld = 0.0;
+        for i in 0..d {
+            ld += l[(i, i)].ln();
+        }
+        2.0 * ld
+    } else {
+        // Fallback: eigendecomposition
+        let svd = SVD::new(m.clone(), false, false);
+        svd.singular_values
+            .iter()
+            .map(|s| s.max(MIN_VARIANCE).ln())
+            .sum()
+    }
+}
+
+// ── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_ppca_fit_simple() {
-        let data = DMatrix::new_random(10, 5);
-        let mask = DMatrix::from_element(10, 5, false);
+    fn test_fit_simple() {
+        let data = DMatrix::new_random(20, 5);
+        let mask = DMatrix::from_element(20, 5, false);
         let mut ppca = PPCA::new(2);
-        let result = ppca.fit(&data, &mask);
-        assert!(result.is_ok());
+        assert!(ppca.fit(&data, &mask).is_ok());
+        assert!(ppca.n_iter().unwrap() > 0);
+        assert!(!ppca.log_likelihoods().unwrap().is_empty());
     }
 
     #[test]
-    fn test_ppca_transform() {
-        let data = DMatrix::new_random(10, 5);
-        let mask = DMatrix::from_element(10, 5, false);
+    fn test_transform_shape() {
+        let data = DMatrix::new_random(20, 5);
+        let mask = DMatrix::from_element(20, 5, false);
         let mut ppca = PPCA::new(2);
         ppca.fit(&data, &mask).unwrap();
-        let transformed = ppca.transform(&data);
-        assert!(transformed.is_ok());
-        let Y = transformed.unwrap();
-        assert_eq!(Y.nrows(), 10);
-        assert_eq!(Y.ncols(), 2);
+        let y = ppca.transform(&data).unwrap();
+        assert_eq!(y.nrows(), 20);
+        assert_eq!(y.ncols(), 2);
     }
 
     #[test]
-    fn test_ppca_with_missing() {
-        let mut data = DMatrix::new_random(10, 5);
-        let mut mask = DMatrix::from_element(10, 5, false);
-        // Mark some values as missing
+    fn test_missing_values() {
+        let data = DMatrix::new_random(20, 5);
+        let mut mask = DMatrix::from_element(20, 5, false);
         mask[(0, 0)] = true;
         mask[(1, 2)] = true;
         mask[(3, 4)] = true;
-
         let mut ppca = PPCA::new(2);
-        let result = ppca.fit(&data, &mask);
-        assert!(result.is_ok());
+        assert!(ppca.fit(&data, &mask).is_ok());
+    }
+
+    #[test]
+    fn test_diagonal_noise() {
+        let data = DMatrix::new_random(30, 8);
+        let mask = DMatrix::from_element(30, 8, false);
+        let config = PPCAConfig {
+            n_components: 2,
+            noise_type: NoiseType::Diagonal,
+            ..PPCAConfig::default()
+        };
+        let mut ppca = PPCA::with_config(config);
+        assert!(ppca.fit(&data, &mask).is_ok());
+        let nv = ppca.noise_variances().unwrap();
+        assert_eq!(nv.len(), 8);
+        assert!(nv.iter().all(|&v| v > 0.0));
+    }
+
+    #[test]
+    fn test_l2_penalty() {
+        let data = DMatrix::new_random(30, 5);
+        let mask = DMatrix::from_element(30, 5, false);
+        let config = PPCAConfig {
+            n_components: 2,
+            l2_penalty: 0.1,
+            ..PPCAConfig::default()
+        };
+        let mut ppca = PPCA::with_config(config);
+        assert!(ppca.fit(&data, &mask).is_ok());
+    }
+
+    #[test]
+    fn test_ll_non_decreasing() {
+        let data = DMatrix::new_random(50, 10);
+        let mask = DMatrix::from_element(50, 10, false);
+        let config = PPCAConfig {
+            n_components: 3,
+            max_iterations: 50,
+            tol: 1e-10, // tight tol so we get many iterations
+            random_state: Some(42),
+            ..PPCAConfig::default()
+        };
+        let mut ppca = PPCA::with_config(config);
+        ppca.fit(&data, &mask).unwrap();
+        let ll = ppca.log_likelihoods().unwrap();
+        for i in 1..ll.len() {
+            assert!(
+                ll[i] >= ll[i - 1] - 1e-6,
+                "LL decreased at iter {}: {} -> {}",
+                i,
+                ll[i - 1],
+                ll[i]
+            );
+        }
     }
 }

@@ -1,263 +1,285 @@
-import warnings
-
 import numpy as np
 import pytest
-from sklearn.datasets import load_iris
 from sklearn.decomposition import PCA
-from sklearn.exceptions import NotFittedError
+from sklearn.utils.validation import check_is_fitted
 
 from ppca import PPCA
 
 
-class TestPPCABasics:
-    @pytest.fixture
-    def simple_data(self):
-        np.random.seed(42)
-        return np.random.randn(50, 10)
+# ── Helpers ──────────────────────────────────────────────────────────────────
 
-    def test_initialization(self):
-        ppca = PPCA(n_components=2)
-        assert ppca.n_components == 2
-        assert ppca.max_iterations == 100
-        assert ppca.tol == 1e-4
-
-    def test_fit_simple(self, simple_data):
-        ppca = PPCA(n_components=2)
-        ppca.fit(simple_data)
-        assert ppca.n_features_in_ == 10
-
-    def test_transform_after_fit(self, simple_data):
-        ppca = PPCA(n_components=2)
-        X_new = ppca.fit(simple_data).transform(simple_data)
-        assert X_new.shape == (50, 2)
-
-    def test_fit_transform(self, simple_data):
-        assert PPCA(n_components=2).fit_transform(simple_data).shape == (50, 2)
-
-    def test_inverse_transform(self, simple_data):
-        ppca = PPCA(n_components=2)
-        X_back = ppca.fit_transform(simple_data)
-        assert ppca.inverse_transform(X_back).shape == simple_data.shape
-
-    def test_reconstruction_error(self, simple_data):
-        ppca = PPCA(n_components=2)
-        ppca.fit(simple_data)
-        error = ppca.reconstruction_error(simple_data)
-        assert isinstance(error, float | np.floating)
-        assert error >= 0
+def _make_low_rank(n=100, p=10, d=3, noise=0.1, seed=0):
+    rng = np.random.RandomState(seed)
+    Z = rng.randn(n, d)
+    W = rng.randn(p, d)
+    return Z @ W.T + noise * rng.randn(n, p)
 
 
-class TestPPCAMissingValues:
-    @pytest.fixture
-    def data_with_missing(self):
-        np.random.seed(42)
-        X = np.random.randn(30, 8)
-        mask = np.random.rand(30, 8) < 0.2
-        return X, mask
-
-    def test_fit_with_missing_mask(self, data_with_missing):
-        X, mask = data_with_missing
-        ppca = PPCA(n_components=2)
-        ppca.fit(X, missing_mask=mask)
-        assert hasattr(ppca, "n_features_in_")
-
-    def test_transform_with_fitted_model(self, data_with_missing):
-        X, mask = data_with_missing
-        ppca = PPCA(n_components=2)
-        ppca.fit(X, missing_mask=mask)
-        assert ppca.transform(X).shape == (30, 2)
-
-    def test_fit_transform_with_missing(self, data_with_missing):
-        X, mask = data_with_missing
-        assert PPCA(n_components=2).fit_transform(X, missing_mask=mask).shape == (30, 2)
-
-    def test_reconstruction_error_with_missing(self, data_with_missing):
-        X, mask = data_with_missing
-        ppca = PPCA(n_components=2)
-        ppca.fit(X, missing_mask=mask)
-        error = ppca.reconstruction_error(X, missing_mask=mask)
-        assert isinstance(error, float | np.floating)
-        assert error >= 0
+def _add_missing(X, frac=0.1, seed=1):
+    rng = np.random.RandomState(seed)
+    mask = rng.rand(*X.shape) < frac
+    X_masked = X.copy()
+    X_masked[mask] = 0.0  # value doesn't matter, mask says missing
+    return X_masked, mask
 
 
-class TestPPCAComparison:
-    @pytest.fixture
-    def iris(self):
-        return load_iris().data
+# ── Basic functionality ─────────────────────────────────────────────────────
 
-    def test_transformed_shape_matches_sklearn(self, iris):
-        ppca = PPCA(n_components=2)
-        sklearn_pca = PCA(n_components=2)
-        assert ppca.fit_transform(iris).shape == sklearn_pca.fit_transform(iris).shape
+class TestBasics:
+    def test_fit_returns_self(self):
+        X = _make_low_rank()
+        model = PPCA(n_components=2)
+        assert model.fit(X) is model
 
-    def test_reconstruction_error_reasonable(self, iris):
-        ppca = PPCA(n_components=2)
-        ppca.fit(iris)
-        assert ppca.reconstruction_error(iris) < np.var(iris)
+    def test_output_shapes(self):
+        X = _make_low_rank(n=50, p=8)
+        model = PPCA(n_components=3).fit(X)
+        assert model.components_.shape == (3, 8)
+        assert model.explained_variance_ratio_.shape == (3,)
+        assert model.mean_.shape == (8,)
+        assert model.noise_variances_.shape == (8,)
+        assert isinstance(model.noise_variance_, float)
+        assert isinstance(model.n_iter_, int)
+        assert model.log_likelihoods_.shape == (model.n_iter_,)
+        assert model.n_features_in_ == 8
+        assert model.n_samples_seen_ == 50
 
-    def test_reconstruction_decreases_with_components(self, iris):
-        errors = []
-        for n in [1, 4]:
-            ppca = PPCA(n_components=n)
-            ppca.fit(iris)
-            errors.append(ppca.reconstruction_error(iris))
+    def test_transform_shape(self):
+        X = _make_low_rank(n=50, p=8)
+        model = PPCA(n_components=3).fit(X)
+        Y = model.transform(X)
+        assert Y.shape == (50, 3)
 
-        for earlier, later in zip(errors[:-1], errors[1:], strict=False):
-            assert earlier >= later - 1e-4
+    def test_fit_transform(self):
+        X = _make_low_rank()
+        model = PPCA(n_components=2)
+        Y = model.fit_transform(X)
+        assert Y.shape == (100, 2)
 
-    def test_explained_variance_ratio_shape(self, iris):
-        ppca = PPCA(n_components=2)
-        ppca.fit(iris)
-        assert ppca.explained_variance_ratio_.shape == (2,)
+    def test_inverse_transform(self):
+        X = _make_low_rank(n=50, p=8)
+        model = PPCA(n_components=3).fit(X)
+        Y = model.transform(X)
+        X_hat = model.inverse_transform(Y)
+        assert X_hat.shape == X.shape
 
-
-class TestPPCAEdgeCases:
-    def test_n_components_greater_than_features_raises(self):
-        ppca = PPCA(n_components=10)
-        with pytest.raises(ValueError):
-            ppca.fit(np.random.randn(50, 5))
-
-    def test_n_components_greater_than_samples_warns(self):
-        X = np.random.randn(3, 10)
-        ppca = PPCA(n_components=5)
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            ppca.fit(X)
-        assert any(issubclass(warning.category, UserWarning) for warning in w)
-
-    def test_transform_before_fit_raises(self):
-        ppca = PPCA(n_components=2)
-        with pytest.raises(NotFittedError):
-            ppca.transform(np.random.randn(50, 5))
-
-    def test_wrong_feature_dimension_raises(self):
-        ppca = PPCA(n_components=2)
-        ppca.fit(np.random.randn(50, 5))
-        with pytest.raises(ValueError):
-            ppca.transform(np.random.randn(30, 3))
-
-    def test_inverse_transform_wrong_components_raises(self):
-        ppca = PPCA(n_components=2)
-        ppca.fit(np.random.randn(50, 5))
-        with pytest.raises(ValueError):
-            ppca.inverse_transform(np.random.randn(10, 4))
-
-    def test_missing_mask_shape_mismatch_raises(self):
-        ppca = PPCA(n_components=2)
-        with pytest.raises(ValueError):
-            ppca.fit(np.random.randn(50, 5), missing_mask=np.zeros((30, 5), dtype=bool))
-
-    def test_sklearn_params_interface(self):
-        ppca = PPCA(n_components=2, max_iterations=50)
-        params = ppca.get_params()
-        assert params["n_components"] == 2
-        assert params["max_iterations"] == 50
-
-        ppca.set_params(n_components=3, max_iterations=200)
-        assert ppca.n_components == 3
-        assert ppca.max_iterations == 200
+    def test_reconstruction_error(self):
+        X = _make_low_rank()
+        model = PPCA(n_components=3).fit(X)
+        err = model.reconstruction_error(X)
+        assert err >= 0.0
+        assert np.isfinite(err)
 
 
-class TestLoadingSigns:
-    """Tests for the optional loading_signs identification constraint.
+# ── Missing values ───────────────────────────────────────────────────────────
 
-    Most sign-sensitive tests use structured data (strong first PC) so that
-    EM reliably converges to the same subspace regardless of random init.
-    """
+class TestMissingValues:
+    def test_fit_with_mask(self):
+        X = _make_low_rank()
+        X_m, mask = _add_missing(X)
+        model = PPCA(n_components=2).fit(X_m, missing_mask=mask)
+        assert model.components_.shape == (2, 10)
 
-    @pytest.fixture
-    def structured_data(self):
-        """Data with a dominant first PC: X ≈ z @ ones^T + noise."""
-        np.random.seed(0)
-        z = np.random.randn(80, 1)
-        return z @ np.ones((1, 6)) + np.random.randn(80, 6) * 0.1
+    def test_transform_with_nan(self):
+        X = _make_low_rank()
+        model = PPCA(n_components=2).fit(X)
+        X_nan = X.copy()
+        X_nan[0, 0] = np.nan
+        Y = model.transform(X_nan)
+        assert Y.shape == (100, 2)
+        assert np.all(np.isfinite(Y))
 
-    def test_none_by_default(self):
-        assert PPCA(n_components=2).loading_signs is None
-
-    def test_positive_constraint_consistent_across_fits(self, structured_data):
-        scores_a = PPCA(n_components=2, loading_signs=[1, 0]).fit_transform(structured_data)
-        scores_b = PPCA(n_components=2, loading_signs=[1, 0]).fit_transform(structured_data)
-        corr = np.corrcoef(scores_a[:, 0], scores_b[:, 0])[0, 1]
-        assert corr > 0.5
-
-    def test_negative_constraint_flips_sign(self, structured_data):
-        pos = PPCA(n_components=2, loading_signs=[1, 0]).fit_transform(structured_data)
-        neg = PPCA(n_components=2, loading_signs=[-1, 0]).fit_transform(structured_data)
-        corr = np.corrcoef(pos[:, 0], neg[:, 0])[0, 1]
-        assert corr < -0.5
-
-    def test_reconstruction_unchanged_by_sign_constraint(self, structured_data):
-        ppca_free = PPCA(n_components=2)
-        ppca_free.fit(structured_data)
-        err_free = ppca_free.reconstruction_error(structured_data)
-
-        ppca_sign = PPCA(n_components=2, loading_signs=[1, 0])
-        ppca_sign.fit(structured_data)
-        err_sign = ppca_sign.reconstruction_error(structured_data)
-
-        np.testing.assert_allclose(err_free, err_sign, rtol=0.05)
-
-    def test_wrong_length_raises(self):
-        ppca = PPCA(n_components=3, loading_signs=[1, 0])
-        with pytest.raises(ValueError, match="loading_signs length"):
-            ppca.fit(np.random.randn(20, 6))
-
-    def test_invalid_value_raises(self):
-        ppca = PPCA(n_components=2, loading_signs=[1, 2])
-        with pytest.raises(ValueError, match="must be -1, 0, or \\+1"):
-            ppca.fit(np.random.randn(20, 6))
-
-    def test_all_zeros_produces_valid_output(self):
-        np.random.seed(42)
-        X = np.random.randn(50, 6)
-        ppca = PPCA(n_components=2, loading_signs=[0, 0])
-        scores = ppca.fit_transform(X)
-        assert scores.shape == (50, 2)
-        assert not np.any(np.isnan(scores))
-
-    def test_with_missing_values(self):
-        np.random.seed(42)
-        X = np.random.randn(30, 8)
-        mask = np.random.rand(30, 8) < 0.2
-        ppca = PPCA(n_components=2, loading_signs=[1, 0])
-        ppca.fit(X, missing_mask=mask)
-        scores = ppca.transform(X)
-        assert scores.shape == (30, 2)
-
-    def test_sklearn_get_params_includes_loading_signs(self):
-        ppca = PPCA(n_components=2, loading_signs=[1, -1])
-        params = ppca.get_params()
-        assert params["loading_signs"] == [1, -1]
+    def test_reconstruction_error_with_mask(self):
+        X = _make_low_rank()
+        X_m, mask = _add_missing(X)
+        model = PPCA(n_components=2).fit(X_m, missing_mask=mask)
+        err = model.reconstruction_error(X_m, missing_mask=mask)
+        assert err >= 0.0
+        assert np.isfinite(err)
 
 
-class TestPPCANumericalStability:
-    def test_handles_very_small_values(self):
-        np.random.seed(42)
-        X = np.random.randn(50, 5) * 1e-10
-        ppca = PPCA(n_components=2)
-        ppca.fit(X)
-        result = ppca.transform(X)
-        assert not np.any(np.isnan(result))
-        assert not np.any(np.isinf(result))
+# ── Comparison with sklearn PCA ──────────────────────────────────────────────
 
-    def test_handles_very_large_values(self):
-        np.random.seed(42)
-        X = np.random.randn(50, 5) * 1e10
-        ppca = PPCA(n_components=2)
-        ppca.fit(X)
-        result = ppca.transform(X)
-        assert not np.any(np.isnan(result))
-        assert not np.any(np.isinf(result))
+class TestVsSklearn:
+    def test_similar_reconstruction(self):
+        X = _make_low_rank(n=200, p=10, d=3, noise=0.05)
+        d = 3
+        ppca = PPCA(n_components=d).fit(X)
+        pca = PCA(n_components=d).fit(X)
 
-    def test_handles_constant_features(self):
-        np.random.seed(42)
-        X = np.random.randn(50, 5)
-        X[:, 0] = 1.0
-        ppca = PPCA(n_components=2)
-        ppca.fit(X)
-        assert ppca.transform(X).shape == (50, 2)
+        ppca_err = ppca.reconstruction_error(X)
+        X_pca = pca.inverse_transform(pca.transform(X))
+        pca_err = np.mean((X - X_pca) ** 2)
+
+        # PPCA should be comparable to PCA on complete data
+        assert ppca_err < pca_err * 3.0
+
+    def test_evr_sums_below_one(self):
+        X = _make_low_rank()
+        model = PPCA(n_components=3).fit(X)
+        assert model.explained_variance_ratio_.sum() <= 1.0 + 1e-6
+        assert np.all(model.explained_variance_ratio_ >= 0.0)
 
 
-if __name__ == "__main__":  # pragma: no cover
-    pytest.main([__file__, "-v"])
+# ── Noise type ───────────────────────────────────────────────────────────────
+
+class TestNoiseType:
+    def test_isotropic_uniform_variances(self):
+        X = _make_low_rank()
+        model = PPCA(n_components=2, noise_type="isotropic").fit(X)
+        assert np.allclose(model.noise_variances_, model.noise_variances_[0])
+
+    def test_diagonal_nonuniform(self):
+        rng = np.random.RandomState(42)
+        # Heteroskedastic noise: different variance per feature
+        X = rng.randn(200, 5)
+        X[:, 0] *= 10.0
+        model = PPCA(n_components=2, noise_type="diagonal").fit(X)
+        # At least not all equal
+        assert not np.allclose(model.noise_variances_, model.noise_variances_[0], atol=0.01)
+
+    def test_diagonal_with_missing(self):
+        X = _make_low_rank()
+        X_m, mask = _add_missing(X)
+        model = PPCA(n_components=2, noise_type="diagonal").fit(X_m, missing_mask=mask)
+        assert model.components_.shape == (2, 10)
+
+    def test_invalid_noise_type(self):
+        with pytest.raises(ValueError, match="noise_type"):
+            PPCA(n_components=2, noise_type="invalid").fit(_make_low_rank())
+
+    def test_transform_both_types(self):
+        X = _make_low_rank()
+        for nt in ("isotropic", "diagonal"):
+            model = PPCA(n_components=2, noise_type=nt).fit(X)
+            Y = model.transform(X)
+            assert Y.shape == (100, 2)
+
+
+# ── L2 penalty ───────────────────────────────────────────────────────────────
+
+class TestL2Penalty:
+    def test_shrinks_loadings(self):
+        X = _make_low_rank()
+        model0 = PPCA(n_components=3, l2_penalty=0.0).fit(X)
+        model1 = PPCA(n_components=3, l2_penalty=1.0).fit(X)
+        norm0 = np.linalg.norm(model0.components_)
+        norm1 = np.linalg.norm(model1.components_)
+        assert norm1 < norm0
+
+    def test_negative_raises(self):
+        with pytest.raises(ValueError, match="l2_penalty"):
+            PPCA(n_components=2, l2_penalty=-0.1).fit(_make_low_rank())
+
+    def test_with_diagonal_noise(self):
+        X = _make_low_rank()
+        model = PPCA(n_components=2, noise_type="diagonal", l2_penalty=0.5).fit(X)
+        assert model.components_.shape == (2, 10)
+
+
+# ── Convergence / diagnostics ────────────────────────────────────────────────
+
+class TestConvergence:
+    def test_ll_non_decreasing(self):
+        X = _make_low_rank(n=100, p=10, d=3)
+        model = PPCA(n_components=3, max_iterations=50, tol=1e-10, random_state=42).fit(X)
+        ll = model.log_likelihoods_
+        # Allow tiny numerical noise
+        diffs = np.diff(ll)
+        assert np.all(diffs >= -1e-4), f"LL decreased: {diffs[diffs < -1e-4]}"
+
+    def test_converges_before_max_iter(self):
+        X = _make_low_rank()
+        model = PPCA(n_components=2, max_iterations=500, tol=1e-4).fit(X)
+        assert model.n_iter_ < 500
+
+    def test_n_iter_matches_ll_length(self):
+        X = _make_low_rank()
+        model = PPCA(n_components=2).fit(X)
+        assert model.n_iter_ == len(model.log_likelihoods_)
+
+
+# ── Random state ─────────────────────────────────────────────────────────────
+
+class TestRandomState:
+    def test_reproducibility(self):
+        X = _make_low_rank()
+        m1 = PPCA(n_components=2, random_state=123).fit(X)
+        m2 = PPCA(n_components=2, random_state=123).fit(X)
+        np.testing.assert_allclose(m1.components_, m2.components_)
+
+    def test_different_seeds_differ(self):
+        X = _make_low_rank()
+        m1 = PPCA(n_components=2, random_state=1).fit(X)
+        m2 = PPCA(n_components=2, random_state=2).fit(X)
+        # Could converge to same solution, but very unlikely with different seeds
+        assert not np.allclose(m1.components_, m2.components_, atol=1e-3)
+
+
+# ── Edge cases ───────────────────────────────────────────────────────────────
+
+class TestEdgeCases:
+    def test_n_components_gt_features_raises(self):
+        X = np.random.randn(20, 3)
+        with pytest.raises(ValueError, match="n_components"):
+            PPCA(n_components=5).fit(X)
+
+    def test_n_components_gt_samples_warns(self):
+        X = np.random.randn(3, 20)
+        with pytest.warns(UserWarning, match="n_components"):
+            PPCA(n_components=5).fit(X)
+
+    def test_not_fitted_transform(self):
+        model = PPCA(n_components=2)
+        with pytest.raises(Exception):
+            model.transform(np.random.randn(10, 5))
+
+    def test_wrong_features_transform(self):
+        X = _make_low_rank(p=10)
+        model = PPCA(n_components=2).fit(X)
+        with pytest.raises(ValueError, match="features"):
+            model.transform(np.random.randn(5, 7))
+
+    def test_wrong_components_inverse_transform(self):
+        X = _make_low_rank()
+        model = PPCA(n_components=2).fit(X)
+        with pytest.raises(ValueError, match="components"):
+            model.inverse_transform(np.random.randn(5, 4))
+
+    def test_mask_shape_mismatch(self):
+        X = _make_low_rank()
+        mask = np.zeros((5, 3), dtype=bool)
+        with pytest.raises(ValueError, match="shape"):
+            PPCA(n_components=2).fit(X, missing_mask=mask)
+
+    def test_sklearn_get_set_params(self):
+        model = PPCA(n_components=3, noise_type="diagonal", l2_penalty=0.5)
+        params = model.get_params()
+        assert params["n_components"] == 3
+        assert params["noise_type"] == "diagonal"
+        assert params["l2_penalty"] == 0.5
+
+        model.set_params(n_components=5)
+        assert model.n_components == 5
+
+
+# ── Numerical stability ─────────────────────────────────────────────────────
+
+class TestNumericalStability:
+    def test_small_values(self):
+        X = _make_low_rank() * 1e-10
+        model = PPCA(n_components=2).fit(X)
+        Y = model.transform(X)
+        assert np.all(np.isfinite(Y))
+
+    def test_large_values(self):
+        X = _make_low_rank() * 1e10
+        model = PPCA(n_components=2).fit(X)
+        Y = model.transform(X)
+        assert np.all(np.isfinite(Y))
+
+    def test_constant_feature(self):
+        X = _make_low_rank()
+        X[:, 0] = 5.0
+        model = PPCA(n_components=2).fit(X)
+        assert np.all(np.isfinite(model.components_))
