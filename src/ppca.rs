@@ -103,33 +103,45 @@ impl PPCA {
             }
         }
 
-        // Initialize parameters. Use a seeded RNG when random_state is set so
-        // that results are reproducible across repeated fits.
-        let mut rng: Box<dyn rand::RngCore> = match self.config.random_state {
-            Some(seed) => Box::new(rand::rngs::StdRng::seed_from_u64(seed)),
-            None => Box::new(rand::thread_rng()),
+        // Precompute per-sample observed indices — the mask is constant across iterations.
+        let obs_by_sample: Vec<Vec<usize>> = (0..n_samples)
+            .map(|i| (0..n_features).filter(|&j| !mask[(i, j)]).collect())
+            .collect();
+
+        // Initialise W and sigma2.
+        // Default: PCA on mean-imputed data — places W near the optimum so EM
+        // converges in tens of iterations rather than thousands.
+        // random_state=Some(seed): random init (for explicit reproducibility testing).
+        let (mut loadings, mut sigma2) = match self.config.random_state {
+            Some(seed) => {
+                let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+                let w = DMatrix::from_fn(n_features, self.config.n_components, |_, _| {
+                    rng.gen::<f64>()
+                });
+                (w, 1.0_f64)
+            }
+            None => self.pca_init(&X_centered)?,
         };
-        let mut loadings = DMatrix::from_fn(n_features, self.config.n_components, |_, _| {
-            rng.gen::<f64>()
-        });
-        let mut sigma2 = 1.0;
 
         // Run EM algorithm
         for _iteration in 0..self.config.max_iterations {
-            let old_sigma2 = sigma2;
+            let old_loadings = loadings.clone();
 
-            // E-step: compute expectations
-            let (expectations, C) = self.e_step(&X_centered, &loadings, sigma2, mask)?;
+            // E-step: per-sample posterior mean (mu_i) and covariance factor (M_i^{-1})
+            let (expectations, posterior_covs) =
+                self.e_step(&X_centered, &loadings, sigma2, &obs_by_sample)?;
 
-            // M-step: update parameters
+            // M-step: update W and sigma2 using per-sample posterior quantities
             let (new_loadings, new_sigma2) =
-                self.m_step(&X_centered, &expectations, &C, sigma2, mask)?;
+                self.m_step(&X_centered, &expectations, &posterior_covs, sigma2, &obs_by_sample)?;
 
             loadings = new_loadings;
             sigma2 = new_sigma2;
 
-            // Check convergence
-            if (old_sigma2 - sigma2).abs() < self.config.tol {
+            // Convergence: relative change in loadings (Frobenius norm)
+            let delta = (&loadings - &old_loadings).norm();
+            let scale = old_loadings.norm().max(1e-10);
+            if delta / scale < self.config.tol {
                 break;
             }
         }
@@ -270,145 +282,182 @@ impl PPCA {
         Ok(mean)
     }
 
+    /// PCA initialisation: compute W and sigma2 from the top-d SVD of the
+    /// (mean-imputed) centred data.  Missing entries are already 0 in X_centered.
+    fn pca_init(&self, X_centered: &DMatrix<f64>) -> Result<(DMatrix<f64>, f64)> {
+        let (n_samples, n_features) = X_centered.shape();
+        let d = self.config.n_components;
+
+        // Full SVD of X_centered (n x p).  V_t rows are the principal directions,
+        // singular values^2 / n are the sample covariance eigenvalues.
+        let svd = SVD::new(X_centered.clone(), false, true);
+        let sv = &svd.singular_values;
+        let v_t = svd.v_t.as_ref().ok_or(PPCAError::MatrixError("SVD V^T unavailable".to_string()))?;
+
+        // Initial sigma2: average eigenvalue of non-principal directions.
+        let sigma2_init = if n_features > d {
+            let tail: f64 = sv.iter().skip(d).map(|s| s * s / n_samples as f64).sum();
+            (tail / (n_features - d) as f64).max(1e-6)
+        } else {
+            1e-3
+        };
+
+        // W_init[:, k] = v_k * sqrt(max(lambda_k - sigma2, eps))
+        let mut w_init = DMatrix::zeros(n_features, d);
+        for k in 0..d {
+            let lambda_k = sv[k] * sv[k] / n_samples as f64;
+            let scale = (lambda_k - sigma2_init).max(1e-6).sqrt();
+            for j in 0..n_features {
+                w_init[(j, k)] = v_t[(k, j)] * scale;
+            }
+        }
+
+        Ok((w_init, sigma2_init))
+    }
+
     fn e_step(
         &self,
         X_centered: &DMatrix<f64>,
         W: &DMatrix<f64>,
         sigma2: f64,
-        mask: &DMatrix<bool>,
-    ) -> Result<(Vec<DVector<f64>>, DMatrix<f64>)> {
-        let (n_samples, n_features) = X_centered.shape();
+        obs_by_sample: &[Vec<usize>],
+    ) -> Result<(Vec<DVector<f64>>, Vec<DMatrix<f64>>)> {
+        let n_samples = X_centered.nrows();
         let d = self.config.n_components;
-
-        // C = W^T W + sigma2 I
-        let WtW = W.transpose() * W;
         let sigma2_I = DMatrix::from_diagonal(&DVector::from_element(d, sigma2));
-        let C = WtW + sigma2_I.clone();
 
-        // Compute C^-1
-        let C_inv = self.matrix_inverse(&C)?;
+        let mut expectations = Vec::with_capacity(n_samples);
+        let mut posterior_covs = Vec::with_capacity(n_samples); // M_i^{-1} per sample
 
-        let mut expectations = vec![];
         for i in 0..n_samples {
-            let x = X_centered.row(i).transpose();
+            let obs_idx = &obs_by_sample[i];
 
-            // Handle missing values: E[z_i | x_i^obs]
-            let x_obs_idx: Vec<usize> = (0..n_features)
-                .filter(|&j| !mask[(i, j)])
-                .collect();
-
-            if x_obs_idx.is_empty() {
+            if obs_idx.is_empty() {
+                // No observations: posterior equals prior  E[z]=0, Cov[z|x]=I
                 expectations.push(DVector::zeros(d));
+                posterior_covs.push(DMatrix::identity(d, d));
                 continue;
             }
 
-            // Partial data
-            let mut x_obs = DVector::zeros(x_obs_idx.len());
-            for (k, &j) in x_obs_idx.iter().enumerate() {
-                x_obs[k] = x[j];
-            }
-
-            // Partial loading matrix
-            let mut W_obs = DMatrix::zeros(x_obs_idx.len(), d);
-            for (k, &j) in x_obs_idx.iter().enumerate() {
+            let n_obs = obs_idx.len();
+            let mut W_obs = DMatrix::zeros(n_obs, d);
+            let mut x_obs = DVector::zeros(n_obs);
+            for (k, &j) in obs_idx.iter().enumerate() {
+                x_obs[k] = X_centered[(i, j)];
                 for l in 0..d {
                     W_obs[(k, l)] = W[(j, l)];
                 }
             }
 
-            // M = (W_obs^T W_obs + sigma2 I)^-1
-            let WobtWo = W_obs.transpose() * &W_obs;
-            let M = (WobtWo + sigma2_I.clone()).try_inverse()
-                .ok_or(PPCAError::MatrixError("Cannot invert M matrix".to_string()))?;
+            // M_i = W_obs^T W_obs + sigma2 * I  (d x d)
+            let WtW = W_obs.transpose() * &W_obs;
+            let M_i = WtW + &sigma2_I;
+            let M_i_inv = M_i
+                .try_inverse()
+                .ok_or(PPCAError::MatrixError("Cannot invert M_i in E-step".to_string()))?;
 
-            // E[z_i | x_i^obs] = M W_obs^T x_obs
-            let expectation = &M * W_obs.transpose() * x_obs;
-            expectations.push(expectation);
+            // E[z_i | x_i^obs] = M_i^{-1} W_obs^T x_obs
+            let mu_i = &M_i_inv * W_obs.transpose() * &x_obs;
+
+            expectations.push(mu_i);
+            posterior_covs.push(M_i_inv);
         }
 
-        Ok((expectations, C_inv))
+        Ok((expectations, posterior_covs))
     }
 
     fn m_step(
         &self,
         X_centered: &DMatrix<f64>,
         expectations: &[DVector<f64>],
-        C_inv: &DMatrix<f64>,
+        posterior_covs: &[DMatrix<f64>], // M_i^{-1} from E-step
         sigma2: f64,
-        mask: &DMatrix<bool>,
+        obs_by_sample: &[Vec<usize>],
     ) -> Result<(DMatrix<f64>, f64)> {
         let (n_samples, n_features) = X_centered.shape();
         let d = self.config.n_components;
 
-        // Per-feature W update: each feature j uses only the samples where
-        // j is observed, so the denominator scales correctly with missing data.
+        // Precompute E[z_i z_i^T | x_i^obs] = mu_i mu_i^T + sigma2 * M_i^{-1}
+        // This is reused for every feature in the W update.
+        let second_moments: Vec<DMatrix<f64>> = (0..n_samples)
+            .map(|i| {
+                let mu = &expectations[i];
+                let m_inv = &posterior_covs[i];
+                mu * mu.transpose() + sigma2 * m_inv
+            })
+            .collect();
+
+        // Accumulate xz[j] = Σ_{i: j observed} x_ij mu_i
+        //            zz[j] = Σ_{i: j observed} E[z_i z_i^T]
+        // Outer loop over samples so each second_moments[i] is loaded once.
+        let mut xz = vec![DVector::<f64>::zeros(d); n_features];
+        let mut zz = vec![DMatrix::<f64>::zeros(d, d); n_features];
+
+        for i in 0..n_samples {
+            let mu_i = &expectations[i];
+            let A_i = &second_moments[i];
+            for &j in &obs_by_sample[i] {
+                xz[j] += X_centered[(i, j)] * mu_i;
+                zz[j] += A_i;
+            }
+        }
+
+        // W update: W_j = zz[j]^{-1} xz[j]
         let mut W = DMatrix::zeros(n_features, d);
         for j in 0..n_features {
-            let mut xz_j = DVector::<f64>::zeros(d);
-            let mut zz_j = DMatrix::<f64>::zeros(d, d);
-            let mut count_j = 0usize;
-
-            for i in 0..n_samples {
-                if !mask[(i, j)] {
-                    let x_ij = X_centered[(i, j)];
-                    let z = &expectations[i];
-                    for l in 0..d {
-                        xz_j[l] += x_ij * z[l];
-                    }
-                    for l1 in 0..d {
-                        for l2 in 0..d {
-                            zz_j[(l1, l2)] += z[l1] * z[l2];
-                        }
-                    }
-                    count_j += 1;
-                }
-            }
-
-            // sum_{i in S_j} E[z_i z_i^T] = Z_j^T Z_j + |S_j| * sigma2 * C_inv
-            let zz_j_full = &zz_j + count_j as f64 * sigma2 * C_inv;
-            let zz_j_inv = zz_j_full.try_inverse()
-                .ok_or(PPCAError::MatrixError("Cannot invert per-feature ZtZ".to_string()))?;
-            let w_j = &zz_j_inv * &xz_j;
+            let zz_inv = zz[j]
+                .clone()
+                .try_inverse()
+                .ok_or(PPCAError::MatrixError("Cannot invert second-moment matrix for feature".to_string()))?;
+            let w_j = zz_inv * &xz[j];
             for l in 0..d {
                 W[(j, l)] = w_j[l];
             }
         }
 
-        // Precompute trace(C_inv W^T W) for the sigma2 correction
-        let WtW = W.transpose() * &W;
-        let C_inv_WtW = C_inv * &WtW;
-        let trace_correction = C_inv_WtW.trace();
-
-        // Update sigma2 — only over observed entries
-        let mut tr_sum = 0.0;
+        // sigma2 update (using NEW W, OLD M_i^{-1}):
+        //   sigma2_new = (1/N_obs) * Σ_{i,j∈O_i}
+        //                  [ (x_ij - W_j^T mu_i)^2  +  sigma2_old * W_j^T M_i^{-1} W_j ]
+        let mut sigma2_num = 0.0_f64;
         let mut n_observed = 0usize;
-        for i in 0..n_samples {
-            let z = &expectations[i];
 
-            for j in 0..n_features {
-                if !mask[(i, j)] {
-                    let x_ij = X_centered[(i, j)];
-                    let mut reconstruction = 0.0;
-                    for l in 0..d {
-                        reconstruction += W[(j, l)] * z[l];
-                    }
-                    tr_sum += (x_ij - reconstruction).powi(2);
-                    n_observed += 1;
+        for i in 0..n_samples {
+            let obs_idx = &obs_by_sample[i];
+            if obs_idx.is_empty() {
+                continue;
+            }
+
+            let mu_i = &expectations[i];
+            let M_inv_i = &posterior_covs[i];
+            let n_obs = obs_idx.len();
+
+            let mut W_obs = DMatrix::zeros(n_obs, d);
+            let mut x_obs = DVector::zeros(n_obs);
+            for (k, &j) in obs_idx.iter().enumerate() {
+                x_obs[k] = X_centered[(i, j)];
+                for l in 0..d {
+                    W_obs[(k, l)] = W[(j, l)];
                 }
             }
 
-            // Trace correction: sigma2 * trace(M^{-1} W^T W) accounts for
-            // posterior uncertainty in z beyond the point estimate.
-            tr_sum += sigma2 * trace_correction;
+            // Squared residuals: ||x_obs - W_obs mu_i||^2
+            let residual = &x_obs - &W_obs * mu_i;
+            sigma2_num += residual.norm_squared();
+
+            // Trace correction: sigma2_old * trace(M_i^{-1} W_obs^T W_obs)
+            let WtW_obs = W_obs.transpose() * &W_obs;
+            sigma2_num += sigma2 * (M_inv_i * WtW_obs).trace();
+
+            n_observed += n_obs;
         }
 
         let sigma2_new = if n_observed > 0 {
-            tr_sum / n_observed as f64
+            (sigma2_num / n_observed as f64).max(1e-6)
         } else {
             sigma2
         };
 
-        Ok((W, sigma2_new.max(1e-6)))
+        Ok((W, sigma2_new))
     }
 
     fn compute_explained_variance(
@@ -420,11 +469,10 @@ impl PPCA {
         let WtW = W.transpose() * W;
         let svd = SVD::new(WtW, false, false);
 
-        // Total variance under the PPCA model is
-        //   trace(C) = trace(W W^T + sigma2 I) = sum(eig(W^T W)) + n_features * sigma2
+        // Eigenvalues of W^T W = variance attributable to each latent direction.
+        // Total model variance = trace(W^T W) + p * sigma2  (always sums to <= 1 by construction).
         let signal_variances = svd.singular_values;
-        let total_variance: f64 = signal_variances.iter().sum::<f64>() + n_features as f64 * sigma2;
-
+        let total_variance = signal_variances.iter().sum::<f64>() + n_features as f64 * sigma2;
         let variance_ratio = if total_variance > 0.0 {
             signal_variances / total_variance
         } else {

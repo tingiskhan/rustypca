@@ -38,9 +38,12 @@ class PPCA(BaseEstimator, TransformerMixin):
         0 leaves it unconstrained.  Applied as a post-EM identification
         step (sign flip).  ``None`` (default) means no constraints.
     random_state : int, optional
-        Seed for the random number generator used to initialise the loading
-        matrix.  Pass an integer for reproducible results across repeated
-        calls.  ``None`` (default) uses a non-deterministic seed.
+        When ``None`` (default) the loading matrix is initialised from a
+        truncated SVD of the mean-imputed data (PCA warm-start).  This is
+        deterministic and converges in tens of EM iterations.
+        When an integer is given, the loading matrix is initialised from a
+        seeded uniform random draw instead — useful for stress-testing
+        convergence, but typically requires many more iterations.
 
     Attributes
     ----------
