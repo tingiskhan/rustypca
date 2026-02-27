@@ -37,6 +37,10 @@ class PPCA(BaseEstimator, TransformerMixin):
         +1 forces the column mean to be positive, -1 forces negative,
         0 leaves it unconstrained.  Applied as a post-EM identification
         step (sign flip).  ``None`` (default) means no constraints.
+    random_state : int, optional
+        Seed for the random number generator used to initialise the loading
+        matrix.  Pass an integer for reproducible results across repeated
+        calls.  ``None`` (default) uses a non-deterministic seed.
 
     Attributes
     ----------
@@ -64,11 +68,13 @@ class PPCA(BaseEstimator, TransformerMixin):
         max_iterations: int = 100,
         tol: float = 1e-4,
         loading_signs: Sequence[int] | None = None,
+        random_state: int | None = None,
     ):
         self.n_components = n_components
         self.max_iterations = max_iterations
         self.tol = tol
         self.loading_signs = loading_signs
+        self.random_state = random_state
 
     def fit(self, X, y=None, missing_mask=None):
         """Fit the model to X.
@@ -124,6 +130,7 @@ class PPCA(BaseEstimator, TransformerMixin):
             max_iterations=self.max_iterations,
             tol=self.tol,
             loading_signs=loading_signs,
+            random_state=self.random_state,
         )
         self._rust_model.fit(X, missing_mask)
 

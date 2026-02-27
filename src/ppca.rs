@@ -3,6 +3,8 @@
 //! Reference: Tipping & Bishop, "Probabilistic Principal Component Analysis", JMLR, 1999
 
 use nalgebra::{DMatrix, DVector, SVD};
+use rand::Rng;
+use rand::SeedableRng;
 use crate::errors::{PPCAError, Result};
 use std::f64;
 
@@ -101,9 +103,14 @@ impl PPCA {
             }
         }
 
-        // Initialize parameters with random values
+        // Initialize parameters. Use a seeded RNG when random_state is set so
+        // that results are reproducible across repeated fits.
+        let mut rng: Box<dyn rand::RngCore> = match self.config.random_state {
+            Some(seed) => Box::new(rand::rngs::StdRng::seed_from_u64(seed)),
+            None => Box::new(rand::thread_rng()),
+        };
         let mut loadings = DMatrix::from_fn(n_features, self.config.n_components, |_, _| {
-            rand::random::<f64>()
+            rng.gen::<f64>()
         });
         let mut sigma2 = 1.0;
 
