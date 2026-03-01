@@ -245,9 +245,6 @@ class TestEdgeCases:
         assert model.n_components == 5
 
 
-# ── Numerical stability ─────────────────────────────────────────────────────
-
-
 class TestNumericalStability:
     def test_small_values(self):
         X = _make_low_rank() * 1e-10
