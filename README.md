@@ -50,7 +50,7 @@ model = PPCA(n_components=2)
 model.fit(X, missing_mask=missing_mask)
 ```
 
-No preprocessing. No imputation. Just hand it the data and the mask.
+No preprocessing. No imputation. Just hand it the data.
 
 ## Testing
 
