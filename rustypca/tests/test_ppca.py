@@ -3,7 +3,7 @@ import pytest
 from sklearn.decomposition import PCA
 from sklearn.exceptions import NotFittedError
 
-from ppca import PPCA
+from rustypca import PPCA
 
 
 def _make_low_rank(n=100, p=10, d=3, noise=0.1, seed=0):
