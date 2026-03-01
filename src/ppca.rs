@@ -184,16 +184,8 @@ impl PPCA {
             log_likelihoods.push(ll);
 
             // M-step
-            let (w_new, psi_new) = m_step(
-                &x_c,
-                &mu,
-                &groups,
-                &pattern_esteps,
-                &self.config,
-                n,
-                p,
-                d,
-            );
+            let (w_new, psi_new) =
+                m_step(&x_c, &mu, &groups, &pattern_esteps, &self.config, n, p, d);
             w = w_new;
             psi = psi_new;
 
@@ -596,7 +588,9 @@ fn m_step(
         // Use SVD solve for numerical stability when the normal equations
         // are singular or ill-conditioned.
         let svd = SVD::new(zz_reg, true, true);
-        let w_j = svd.solve(&xz[j], 1e-12).unwrap_or_else(|_| DVector::zeros(d));
+        let w_j = svd
+            .solve(&xz[j], 1e-12)
+            .unwrap_or_else(|_| DVector::zeros(d));
         for l in 0..d {
             w_new[(j, l)] = w_j[l];
         }
