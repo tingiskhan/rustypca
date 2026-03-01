@@ -77,17 +77,15 @@ class PPCA(BaseEstimator, TransformerMixin):
         self.noise_type = noise_type
         self.l2_penalty = l2_penalty
 
-    def fit(self, X, y=None, missing_mask=None):
+    def fit(self, X, y=None):
         """Fit the model to *X*.
 
         Parameters
         ----------
         X : array-like of shape (n_samples, n_features)
-            Training data.
+            Training data.  ``NaN`` entries are treated as missing.
         y : None
             Ignored.
-        missing_mask : array-like of shape (n_samples, n_features), optional
-            Boolean mask where ``True`` marks a missing value.
 
         Returns
         -------
@@ -114,12 +112,7 @@ class PPCA(BaseEstimator, TransformerMixin):
         if self.l2_penalty < 0:
             raise ValueError(f"l2_penalty must be >= 0, got {self.l2_penalty}")
 
-        if missing_mask is None:
-            missing_mask = np.zeros_like(X, dtype=bool)
-        else:
-            missing_mask = check_array(missing_mask, accept_sparse=False, ensure_2d=True, dtype=bool)
-            if missing_mask.shape != X.shape:
-                raise ValueError(f"missing_mask shape {missing_mask.shape} does not match X shape {X.shape}")
+        missing_mask = np.isnan(X)
 
         self._rust_model = PPCARust(
             n_components=self.n_components,
@@ -131,7 +124,7 @@ class PPCA(BaseEstimator, TransformerMixin):
         )
         self._rust_model.fit(X, missing_mask)
 
-        self.mean_ = np.nanmean(np.where(missing_mask, np.nan, X), axis=0)
+        self.mean_ = np.nanmean(X, axis=0)
         self.explained_variance_ratio_ = np.array(self._rust_model.explained_variance_ratio())
         self.noise_variances_ = np.array(self._rust_model.noise_variances())
         self.noise_variance_ = float(self.noise_variances_.mean())
@@ -166,17 +159,15 @@ class PPCA(BaseEstimator, TransformerMixin):
         X = np.where(np.isnan(X), self.mean_, X)
         return self._rust_model.transform(X)
 
-    def fit_transform(self, X, y=None, missing_mask=None):
+    def fit_transform(self, X, y=None):
         """Fit and transform in one call.
 
         Parameters
         ----------
         X : array-like of shape (n_samples, n_features)
-            Training data.
+            Training data.  ``NaN`` entries are treated as missing.
         y : None
             Ignored.
-        missing_mask : array-like of shape (n_samples, n_features), optional
-            Boolean mask where ``True`` marks a missing value.
 
         Returns
         -------
@@ -184,7 +175,7 @@ class PPCA(BaseEstimator, TransformerMixin):
             Projected data.
 
         """
-        return self.fit(X, y, missing_mask).transform(X)
+        return self.fit(X, y).transform(X)
 
     def inverse_transform(self, X):
         """Reconstruct feature-space data from latent representation.
@@ -208,15 +199,13 @@ class PPCA(BaseEstimator, TransformerMixin):
 
         return self._rust_model.inverse_transform(X)
 
-    def reconstruction_error(self, X, missing_mask=None):
+    def reconstruction_error(self, X):
         """Mean squared reconstruction error (observed entries only).
 
         Parameters
         ----------
         X : array-like of shape (n_samples, n_features)
-            Test data.
-        missing_mask : array-like of shape (n_samples, n_features), optional
-            Boolean mask where ``True`` marks a missing value.
+            Test data.  ``NaN`` entries are treated as missing.
 
         Returns
         -------
@@ -227,9 +216,5 @@ class PPCA(BaseEstimator, TransformerMixin):
         check_is_fitted(self, ["_rust_model"])
         X = check_array(X, accept_sparse=False, ensure_2d=True, dtype=np.float64, ensure_all_finite="allow-nan")
 
-        if missing_mask is None:
-            missing_mask = np.zeros_like(X, dtype=bool)
-        else:
-            missing_mask = check_array(missing_mask, accept_sparse=False, ensure_2d=True, dtype=bool)
-
+        missing_mask = np.isnan(X)
         return self._rust_model.reconstruction_error(X, missing_mask)

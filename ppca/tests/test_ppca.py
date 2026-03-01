@@ -17,8 +17,8 @@ def _add_missing(X, frac=0.1, seed=1):
     rng = np.random.RandomState(seed)
     mask = rng.rand(*X.shape) < frac
     X_masked = X.copy()
-    X_masked[mask] = 0.0  # value doesn't matter, mask says missing
-    return X_masked, mask
+    X_masked[mask] = np.nan
+    return X_masked
 
 
 class TestBasics:
@@ -68,10 +68,10 @@ class TestBasics:
 
 
 class TestMissingValues:
-    def test_fit_with_mask(self):
+    def test_fit_with_missing(self):
         X = _make_low_rank()
-        X_m, mask = _add_missing(X)
-        model = PPCA(n_components=2).fit(X_m, missing_mask=mask)
+        X_m = _add_missing(X)
+        model = PPCA(n_components=2).fit(X_m)
         assert model.components_.shape == (2, 10)
 
     def test_transform_with_nan(self):
@@ -83,11 +83,11 @@ class TestMissingValues:
         assert Y.shape == (100, 2)
         assert np.all(np.isfinite(Y))
 
-    def test_reconstruction_error_with_mask(self):
+    def test_reconstruction_error_with_missing(self):
         X = _make_low_rank()
-        X_m, mask = _add_missing(X)
-        model = PPCA(n_components=2).fit(X_m, missing_mask=mask)
-        err = model.reconstruction_error(X_m, missing_mask=mask)
+        X_m = _add_missing(X)
+        model = PPCA(n_components=2).fit(X_m)
+        err = model.reconstruction_error(X_m)
         assert err >= 0.0
         assert np.isfinite(err)
 
@@ -130,8 +130,8 @@ class TestNoiseType:
 
     def test_diagonal_with_missing(self):
         X = _make_low_rank()
-        X_m, mask = _add_missing(X)
-        model = PPCA(n_components=2, noise_type="diagonal").fit(X_m, missing_mask=mask)
+        X_m = _add_missing(X)
+        model = PPCA(n_components=2, noise_type="diagonal").fit(X_m)
         assert model.components_.shape == (2, 10)
 
     def test_invalid_noise_type(self):
@@ -227,12 +227,6 @@ class TestEdgeCases:
         model = PPCA(n_components=2).fit(X)
         with pytest.raises(ValueError, match="components"):
             model.inverse_transform(np.random.randn(5, 4))
-
-    def test_mask_shape_mismatch(self):
-        X = _make_low_rank()
-        mask = np.zeros((5, 3), dtype=bool)
-        with pytest.raises(ValueError, match="shape"):
-            PPCA(n_components=2).fit(X, missing_mask=mask)
 
     def test_sklearn_get_set_params(self):
         model = PPCA(n_components=3, noise_type="diagonal", l2_penalty=0.5)
