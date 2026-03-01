@@ -1,13 +1,13 @@
 //! Probabilistic Principal Component Analysis (PPCA) with missing value support
-//! 
+//!
 //! This module provides both the core algorithm and Python bindings.
 
-pub mod ppca;
-pub mod errors;
 pub mod bindings;
+pub mod errors;
+pub mod ppca;
 
-pub use ppca::{PPCA, PPCAConfig, PPCAResult};
 pub use errors::PPCAError;
+pub use ppca::{NoiseType, PPCAConfig, PPCAResult, PPCA};
 
 // Re-export for convenience
 pub type Result<T> = std::result::Result<T, PPCAError>;

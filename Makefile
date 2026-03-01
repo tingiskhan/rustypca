@@ -1,15 +1,17 @@
-PHONY: format check develop
+.PHONY: format check develop test
 
 format:
-	ruff format ppca
-	ruff check ppca --fix
+	cargo fmt
+	uv run ruff format ppca
+	uv run ruff check ppca --fix
 
 check:
-	ruff format ppca --check
-	ruff check ppca
+	cargo fmt --check
+	uv run ruff format ppca --check
+	uv run ruff check ppca
 
 develop:
-	maturin develop
+	uv run maturin develop
 
 test:
-	pytest -v ppca
+	uv run pytest -v ppca

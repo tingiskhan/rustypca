@@ -4,11 +4,22 @@ use std::fmt;
 
 #[derive(Debug, Clone)]
 pub enum PPCAError {
-    InvalidDimensions { expected: usize, got: usize },
+    InvalidDimensions {
+        expected: usize,
+        got: usize,
+    },
     NoDimensionality,
     NoConvergence,
     MatrixError(String),
-    InvalidComponents { n_components: usize, n_features: usize },
+    InvalidComponents {
+        n_components: usize,
+        n_features: usize,
+    },
+    ShapeMismatch {
+        expected: (usize, usize),
+        got: (usize, usize),
+    },
+    InvalidPenalty(f64),
 }
 
 impl fmt::Display for PPCAError {
@@ -20,8 +31,21 @@ impl fmt::Display for PPCAError {
             PPCAError::NoDimensionality => write!(f, "Data has no dimensionality"),
             PPCAError::NoConvergence => write!(f, "EM algorithm did not converge"),
             PPCAError::MatrixError(msg) => write!(f, "Matrix error: {}", msg),
-            PPCAError::InvalidComponents { n_components, n_features } => {
-                write!(f, "n_components ({}) must be <= n_features ({})", n_components, n_features)
+            PPCAError::InvalidComponents {
+                n_components,
+                n_features,
+            } => {
+                write!(
+                    f,
+                    "n_components ({}) must be <= n_features ({})",
+                    n_components, n_features
+                )
+            }
+            PPCAError::ShapeMismatch { expected, got } => {
+                write!(f, "Shape mismatch: expected {:?}, got {:?}", expected, got)
+            }
+            PPCAError::InvalidPenalty(v) => {
+                write!(f, "l2_penalty must be >= 0, got {}", v)
             }
         }
     }
