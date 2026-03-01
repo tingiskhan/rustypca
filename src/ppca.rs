@@ -128,6 +128,16 @@ impl PPCA {
         if n == 0 || p == 0 {
             return Err(PPCAError::NoDimensionality);
         }
+        let (mask_n, mask_p) = mask.shape();
+        if mask_n != n || mask_p != p {
+            return Err(PPCAError::ShapeMismatch {
+                expected: (n, p),
+                got: (mask_n, mask_p),
+            });
+        }
+        if self.config.l2_penalty < 0.0 {
+            return Err(PPCAError::InvalidPenalty(self.config.l2_penalty));
+        }
         if d > p {
             return Err(PPCAError::InvalidComponents {
                 n_components: d,
@@ -378,12 +388,19 @@ fn build_pattern_groups(mask: &DMatrix<bool>, n: usize, p: usize) -> Vec<Pattern
         let obs: Vec<usize> = (0..p).filter(|&j| !mask[(i, j)]).collect();
         map.entry(obs).or_default().push(i);
     }
-    map.into_iter()
+    let mut groups: Vec<PatternGroup> = map
+        .into_iter()
         .map(|(obs_indices, sample_indices)| PatternGroup {
             sample_indices,
             obs_indices,
         })
-        .collect()
+        .collect();
+
+    // Sort deterministically so floating-point accumulation order is
+    // reproducible across runs (HashMap iteration order is randomised).
+    groups.sort_by(|a, b| a.obs_indices.cmp(&b.obs_indices));
+
+    groups
 }
 
 /// PCA warm-start: SVD of (mean-imputed) centred data.
@@ -571,18 +588,18 @@ fn m_step(
         }
     }
 
-    // W update: W[j,:] = xz[j]^T (zz[j] + λI)^{-1}
+    // W update: solve (zz[j] + λI) w_j = xz[j] for each feature j
     let lambda_i = config.l2_penalty * DMatrix::<f64>::identity(d, d);
     let mut w_new = DMatrix::zeros(p, d);
     for j in 0..p {
         let zz_reg = &zz[j] + &lambda_i;
-        if let Some(inv) = zz_reg.try_inverse() {
-            let w_j = &inv * &xz[j];
-            for l in 0..d {
-                w_new[(j, l)] = w_j[l];
-            }
+        // Use SVD solve for numerical stability when the normal equations
+        // are singular or ill-conditioned.
+        let svd = SVD::new(zz_reg, true, true);
+        let w_j = svd.solve(&xz[j], 1e-12).unwrap_or_else(|_| DVector::zeros(d));
+        for l in 0..d {
+            w_new[(j, l)] = w_j[l];
         }
-        // If inversion fails, row stays zero (rare edge case).
     }
 
     // Noise update: ψ_j = (1/n_j) Σ_{i:j obs} [(x_ij - w_j^T μ_i)² + w_j^T Σ_i w_j]
@@ -688,10 +705,16 @@ fn chol_log_det(m: &DMatrix<f64>) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand::SeedableRng;
+
+    fn random_data(rows: usize, cols: usize, seed: u64) -> DMatrix<f64> {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+        DMatrix::from_fn(rows, cols, |_, _| rng.gen::<f64>())
+    }
 
     #[test]
     fn test_fit_simple() {
-        let data = DMatrix::new_random(20, 5);
+        let data = random_data(20, 5, 0);
         let mask = DMatrix::from_element(20, 5, false);
         let mut ppca = PPCA::new(2);
         assert!(ppca.fit(&data, &mask).is_ok());
@@ -701,7 +724,7 @@ mod tests {
 
     #[test]
     fn test_transform_shape() {
-        let data = DMatrix::new_random(20, 5);
+        let data = random_data(20, 5, 1);
         let mask = DMatrix::from_element(20, 5, false);
         let mut ppca = PPCA::new(2);
         ppca.fit(&data, &mask).unwrap();
@@ -712,7 +735,7 @@ mod tests {
 
     #[test]
     fn test_missing_values() {
-        let data = DMatrix::new_random(20, 5);
+        let data = random_data(20, 5, 2);
         let mut mask = DMatrix::from_element(20, 5, false);
         mask[(0, 0)] = true;
         mask[(1, 2)] = true;
@@ -723,7 +746,7 @@ mod tests {
 
     #[test]
     fn test_diagonal_noise() {
-        let data = DMatrix::new_random(30, 8);
+        let data = random_data(30, 8, 3);
         let mask = DMatrix::from_element(30, 8, false);
         let config = PPCAConfig {
             n_components: 2,
@@ -739,7 +762,7 @@ mod tests {
 
     #[test]
     fn test_l2_penalty() {
-        let data = DMatrix::new_random(30, 5);
+        let data = random_data(30, 5, 4);
         let mask = DMatrix::from_element(30, 5, false);
         let config = PPCAConfig {
             n_components: 2,
@@ -752,7 +775,7 @@ mod tests {
 
     #[test]
     fn test_ll_non_decreasing() {
-        let data = DMatrix::new_random(50, 10);
+        let data = random_data(50, 10, 5);
         let mask = DMatrix::from_element(50, 10, false);
         let config = PPCAConfig {
             n_components: 3,
@@ -773,5 +796,26 @@ mod tests {
                 ll[i]
             );
         }
+    }
+
+    #[test]
+    fn test_mask_shape_mismatch() {
+        let data = random_data(20, 5, 6);
+        let mask = DMatrix::from_element(20, 3, false); // wrong shape
+        let mut ppca = PPCA::new(2);
+        assert!(ppca.fit(&data, &mask).is_err());
+    }
+
+    #[test]
+    fn test_negative_l2_penalty() {
+        let data = random_data(20, 5, 7);
+        let mask = DMatrix::from_element(20, 5, false);
+        let config = PPCAConfig {
+            n_components: 2,
+            l2_penalty: -0.1,
+            ..PPCAConfig::default()
+        };
+        let mut ppca = PPCA::with_config(config);
+        assert!(ppca.fit(&data, &mask).is_err());
     }
 }
