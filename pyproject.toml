@@ -1,0 +1,70 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "rustypca"
+version = "0.1.0"
+description = "Probabilistic PCA with missing value support using Rust and PyO3"
+readme = {file = "README.md"}
+license = {file = "LICENSE"}
+requires-python = ">=3.10,<3.14"
+authors = [{name = "Victor Gruselius", email = "victor.tingstrom@gmail.com"}]
+keywords = ["pca", "probabilistic", "missing-values", "machine-learning"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+]
+dependencies = [
+    "numpy>=1.21.0,<3.0",
+    "scikit-learn>=1.0.0,<2.0",
+]
+
+[project.urls]
+Repository = "https://github.com/tingiskhan/rustypca"
+Documentation = "https://github.com/tingiskhan/rustypca#readme"
+
+[tool.maturin]
+module-name = "rustypca.ppca_rs"
+features = ["pyo3/extension-module"]
+
+[tool.pytest.ini_options]
+addopts = "--cov=rustypca --cov-report=term-missing --cov-fail-under=95"
+
+[tool.ruff]
+line-length = 120
+lint.select = [
+    "E",     # pycodestyle
+    "F",     # Pyflakes
+    "UP",    # pyupgrade
+    "B",     # flake8-bugbear
+    "SIM",   # flake8-simplify
+    "I",     # isort
+    "TID252",
+    "D",     # pydocstyle
+]
+
+[tool.ruff.lint.per-file-ignores]
+"rustypca/tests/*.py" = ["D"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0,<9.0",
+    "pytest-cov>=3.0,<4.0",
+    "maturin>=1.0,<2.0",
+    "ruff>=0.15,<0.16",
+    "yfinance>=1.2.0,<2.0",
+    "pandas>=2.0,<3.0",
+    "lxml>=6.0.2",
+    "jupyter>=1.1.1",
+    "plotly>=6.5.2",
+    "ipywidgets>=7.5",
+    "matplotlib>=3.10.8",
+]

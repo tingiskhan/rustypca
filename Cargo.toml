@@ -1,0 +1,24 @@
+[package]
+name = "rustypca"
+version = "0.1.0"
+edition = "2021"
+description = "Probabilistic Principal Component Analysis with missing value support"
+authors = ["PPCA Contributors"]
+license = "MIT"
+
+[dependencies]
+nalgebra = "0.33"
+pyo3 = { version = "0.23", features = ["extension-module"] }
+numpy = "0.23"
+rand = "0.8"
+serde = { version = "1.0", features = ["derive"], optional = true }
+
+[lib]
+name = "ppca_rs"
+crate-type = ["cdylib"]
+
+[dev-dependencies]
+
+[features]
+default = []
+serde = ["dep:serde"]
