@@ -11,9 +11,7 @@ from sklearn.utils.validation import check_array, check_is_fitted
 try:
     from .ppca_rs import PPCARust
 except ImportError as e:  # pragma: no cover
-    raise ImportError(
-        "ppca_rs module not found. Build with 'pip install -e .' or 'maturin develop'"
-    ) from e
+    raise ImportError("ppca_rs module not found. Build with 'pip install -e .' or 'maturin develop'") from e
 
 
 class PPCA(BaseEstimator, TransformerMixin):

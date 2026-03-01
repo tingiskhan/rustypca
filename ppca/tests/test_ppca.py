@@ -1,12 +1,12 @@
 import numpy as np
 import pytest
 from sklearn.decomposition import PCA
-from sklearn.utils.validation import check_is_fitted
+from sklearn.exceptions import NotFittedError
 
 from ppca import PPCA
 
-
 # ── Helpers ──────────────────────────────────────────────────────────────────
+
 
 def _make_low_rank(n=100, p=10, d=3, noise=0.1, seed=0):
     rng = np.random.RandomState(seed)
@@ -24,6 +24,7 @@ def _add_missing(X, frac=0.1, seed=1):
 
 
 # ── Basic functionality ─────────────────────────────────────────────────────
+
 
 class TestBasics:
     def test_fit_returns_self(self):
@@ -73,6 +74,7 @@ class TestBasics:
 
 # ── Missing values ───────────────────────────────────────────────────────────
 
+
 class TestMissingValues:
     def test_fit_with_mask(self):
         X = _make_low_rank()
@@ -100,6 +102,7 @@ class TestMissingValues:
 
 # ── Comparison with sklearn PCA ──────────────────────────────────────────────
 
+
 class TestVsSklearn:
     def test_similar_reconstruction(self):
         X = _make_low_rank(n=200, p=10, d=3, noise=0.05)
@@ -122,6 +125,7 @@ class TestVsSklearn:
 
 
 # ── Noise type ───────────────────────────────────────────────────────────────
+
 
 class TestNoiseType:
     def test_isotropic_uniform_variances(self):
@@ -158,6 +162,7 @@ class TestNoiseType:
 
 # ── L2 penalty ───────────────────────────────────────────────────────────────
 
+
 class TestL2Penalty:
     def test_shrinks_loadings(self):
         X = _make_low_rank()
@@ -178,6 +183,7 @@ class TestL2Penalty:
 
 
 # ── Convergence / diagnostics ────────────────────────────────────────────────
+
 
 class TestConvergence:
     def test_ll_non_decreasing(self):
@@ -201,6 +207,7 @@ class TestConvergence:
 
 # ── Random state ─────────────────────────────────────────────────────────────
 
+
 class TestRandomState:
     def test_reproducibility(self):
         X = _make_low_rank()
@@ -218,6 +225,7 @@ class TestRandomState:
 
 # ── Edge cases ───────────────────────────────────────────────────────────────
 
+
 class TestEdgeCases:
     def test_n_components_gt_features_raises(self):
         X = np.random.randn(20, 3)
@@ -231,7 +239,7 @@ class TestEdgeCases:
 
     def test_not_fitted_transform(self):
         model = PPCA(n_components=2)
-        with pytest.raises(Exception):
+        with pytest.raises(NotFittedError):
             model.transform(np.random.randn(10, 5))
 
     def test_wrong_features_transform(self):
@@ -264,6 +272,7 @@ class TestEdgeCases:
 
 
 # ── Numerical stability ─────────────────────────────────────────────────────
+
 
 class TestNumericalStability:
     def test_small_values(self):
