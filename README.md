@@ -8,7 +8,7 @@ If you've ever had the misfortune of staring at a dataset full of NaNs and tryin
 
 Regular PCA falls apart the moment your data has holes in it. Probabilistic PCA treats the problem properly — missing values become latent variables in a generative model, which is a fancy way of saying "we do the math right instead of duct-taping NaNs."
 
-For the full story, see [Tipping & Bishop (1999)](https://www.robots.ox.ac.uk/~cbishop/papers/PPCA.pdf), *"Probabilistic Principal Component Analysis"*, Journal of the Royal Statistical Society, 61(3), 611–622. We follow their approach closely.
+For the full story, see [Tipping & Bishop (1999)](https://www.robots.ox.ac.uk/~cbishop/papers/PPCA.pdf), *"Probabilistic Principal Component Analysis"*, Journal of the Royal Statistical Society, 61(3), 611–622.
 
 ## Features
 
