@@ -1,5 +1,5 @@
 use nalgebra::DMatrix;
-use numpy::PyArray2;
+use numpy::{PyArray2, PyArrayMethods, PyReadonlyArray2};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
@@ -46,7 +46,12 @@ impl PPCARust {
         })
     }
 
-    fn fit(&mut self, _py: Python, x: &PyArray2<f64>, mask: Option<&PyArray2<bool>>) -> PyResult<()> {
+    #[pyo3(signature = (x, mask=None))]
+    fn fit(
+        &mut self,
+        x: PyReadonlyArray2<'_, f64>,
+        mask: Option<PyReadonlyArray2<'_, bool>>,
+    ) -> PyResult<()> {
         let x_mat = py_to_matrix(x)?;
         let mask_mat = match mask {
             Some(m) => py_bool_to_matrix(m)?,
@@ -57,7 +62,11 @@ impl PPCARust {
             .map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
-    fn transform(&self, py: Python, x: &PyArray2<f64>) -> PyResult<Py<PyArray2<f64>>> {
+    fn transform<'py>(
+        &self,
+        py: Python<'py>,
+        x: PyReadonlyArray2<'_, f64>,
+    ) -> PyResult<Py<PyArray2<f64>>> {
         let x_mat = py_to_matrix(x)?;
         let y = self
             .inner
@@ -66,7 +75,11 @@ impl PPCARust {
         matrix_to_py(py, &y)
     }
 
-    fn inverse_transform(&self, py: Python, y: &PyArray2<f64>) -> PyResult<Py<PyArray2<f64>>> {
+    fn inverse_transform<'py>(
+        &self,
+        py: Python<'py>,
+        y: PyReadonlyArray2<'_, f64>,
+    ) -> PyResult<Py<PyArray2<f64>>> {
         let y_mat = py_to_matrix(y)?;
         let x = self
             .inner
@@ -75,14 +88,26 @@ impl PPCARust {
         matrix_to_py(py, &x)
     }
 
-    fn fit_transform(
+    #[pyo3(signature = (x, mask=None))]
+    fn fit_transform<'py>(
         &mut self,
-        py: Python,
-        x: &PyArray2<f64>,
-        mask: Option<&PyArray2<bool>>,
+        py: Python<'py>,
+        x: PyReadonlyArray2<'_, f64>,
+        mask: Option<PyReadonlyArray2<'_, bool>>,
     ) -> PyResult<Py<PyArray2<f64>>> {
-        self.fit(py, x, mask)?;
-        self.transform(py, x)
+        let x_mat = py_to_matrix(x)?;
+        let mask_mat = match mask {
+            Some(m) => py_bool_to_matrix(m)?,
+            None => DMatrix::from_element(x_mat.nrows(), x_mat.ncols(), false),
+        };
+        self.inner
+            .fit(&x_mat, &mask_mat)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        let y = self
+            .inner
+            .transform(&x_mat)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        matrix_to_py(py, &y)
     }
 
     fn explained_variance_ratio(&self) -> PyResult<Vec<f64>> {
@@ -92,7 +117,7 @@ impl PPCARust {
             .map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
-    fn loadings(&self, py: Python) -> PyResult<Py<PyArray2<f64>>> {
+    fn loadings<'py>(&self, py: Python<'py>) -> PyResult<Py<PyArray2<f64>>> {
         let r = self
             .inner
             .result()
@@ -126,10 +151,11 @@ impl PPCARust {
             .map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
+    #[pyo3(signature = (x, mask=None))]
     fn reconstruction_error(
         &self,
-        x: &PyArray2<f64>,
-        mask: Option<&PyArray2<bool>>,
+        x: PyReadonlyArray2<'_, f64>,
+        mask: Option<PyReadonlyArray2<'_, bool>>,
     ) -> PyResult<f64> {
         let x_mat = py_to_matrix(x)?;
         let mask_mat = match mask {
@@ -144,19 +170,17 @@ impl PPCARust {
 
 // ── Conversion helpers ──────────────────────────────────────────────────────
 
-fn py_to_matrix(arr: &PyArray2<f64>) -> PyResult<DMatrix<f64>> {
-    let ro = arr.readonly();
-    let shape = ro.dims();
-    let slice = ro
+fn py_to_matrix(arr: PyReadonlyArray2<'_, f64>) -> PyResult<DMatrix<f64>> {
+    let shape = arr.dims();
+    let slice = arr
         .as_slice()
         .map_err(|_| PyValueError::new_err("Failed to read array data"))?;
     Ok(DMatrix::from_row_slice(shape[0], shape[1], slice))
 }
 
-fn py_bool_to_matrix(arr: &PyArray2<bool>) -> PyResult<DMatrix<bool>> {
-    let ro = arr.readonly();
-    let shape = ro.dims();
-    let slice = ro
+fn py_bool_to_matrix(arr: PyReadonlyArray2<'_, bool>) -> PyResult<DMatrix<bool>> {
+    let shape = arr.dims();
+    let slice = arr
         .as_slice()
         .map_err(|_| PyValueError::new_err("Failed to read array data"))?;
     Ok(DMatrix::from_row_slice(shape[0], shape[1], slice))
@@ -168,11 +192,11 @@ fn matrix_to_py(py: Python, m: &DMatrix<f64>) -> PyResult<Py<PyArray2<f64>>> {
         .collect();
     let arr = PyArray2::from_vec2(py, &rows)
         .map_err(|e| PyValueError::new_err(format!("Failed to create array: {}", e)))?;
-    Ok(arr.to_owned())
+    Ok(arr.unbind())
 }
 
 #[pymodule]
-fn ppca_rs(_py: Python, m: &PyModule) -> PyResult<()> {
+fn ppca_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PPCARust>()?;
     Ok(())
 }
