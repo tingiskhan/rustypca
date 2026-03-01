@@ -2,16 +2,16 @@
 
 format:
 	cargo fmt
-	uv run ruff format ppca
-	uv run ruff check ppca --fix
+	uv run ruff format rustypca
+	uv run ruff check rustypca --fix
 
 check:
 	cargo fmt --check
-	uv run ruff format ppca --check
-	uv run ruff check ppca
+	uv run ruff format rustypca --check
+	uv run ruff check rustypca
 
 develop:
 	uv run maturin develop
 
 test:
-	uv run pytest -v ppca
+	uv run pytest -v rustypca

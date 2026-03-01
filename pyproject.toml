@@ -3,7 +3,7 @@ requires = ["maturin>=1.0,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "ppca"
+name = "rustypca"
 version = "0.1.0"
 description = "Probabilistic PCA with missing value support using Rust and PyO3"
 readme = {file = "README.md"}
@@ -28,15 +28,15 @@ dependencies = [
 ]
 
 [project.urls]
-Repository = "https://github.com/tingiskhan/ppca"
-Documentation = "https://github.com/tingiskhan/ppca#readme"
+Repository = "https://github.com/tingiskhan/rustypca"
+Documentation = "https://github.com/tingiskhan/rustypca#readme"
 
 [tool.maturin]
-module-name = "ppca.ppca_rs"
+module-name = "rustypca.ppca_rs"
 features = ["pyo3/extension-module"]
 
 [tool.pytest.ini_options]
-addopts = "--cov=ppca --cov-report=term-missing --cov-fail-under=95"
+addopts = "--cov=rustypca --cov-report=term-missing --cov-fail-under=95"
 
 [tool.ruff]
 line-length = 120
@@ -52,7 +52,7 @@ lint.select = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"ppca/tests/*.py" = ["D"]
+"rustypca/tests/*.py" = ["D"]
 
 [dependency-groups]
 dev = [
