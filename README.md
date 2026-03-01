@@ -58,6 +58,10 @@ No preprocessing. No imputation. Just hand it the data and the mask.
 make run-tests
 ```
 
+## Disclaimer
+
+This project was built with the help of [Claude](https://claude.ai).
+
 ## License
 
 MIT

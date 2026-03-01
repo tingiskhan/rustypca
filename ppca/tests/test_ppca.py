@@ -5,8 +5,6 @@ from sklearn.exceptions import NotFittedError
 
 from ppca import PPCA
 
-# ── Helpers ──────────────────────────────────────────────────────────────────
-
 
 def _make_low_rank(n=100, p=10, d=3, noise=0.1, seed=0):
     rng = np.random.RandomState(seed)
@@ -21,9 +19,6 @@ def _add_missing(X, frac=0.1, seed=1):
     X_masked = X.copy()
     X_masked[mask] = 0.0  # value doesn't matter, mask says missing
     return X_masked, mask
-
-
-# ── Basic functionality ─────────────────────────────────────────────────────
 
 
 class TestBasics:
@@ -72,9 +67,6 @@ class TestBasics:
         assert np.isfinite(err)
 
 
-# ── Missing values ───────────────────────────────────────────────────────────
-
-
 class TestMissingValues:
     def test_fit_with_mask(self):
         X = _make_low_rank()
@@ -100,9 +92,6 @@ class TestMissingValues:
         assert np.isfinite(err)
 
 
-# ── Comparison with sklearn PCA ──────────────────────────────────────────────
-
-
 class TestVsSklearn:
     def test_similar_reconstruction(self):
         X = _make_low_rank(n=200, p=10, d=3, noise=0.05)
@@ -122,9 +111,6 @@ class TestVsSklearn:
         model = PPCA(n_components=3).fit(X)
         assert model.explained_variance_ratio_.sum() <= 1.0 + 1e-6
         assert np.all(model.explained_variance_ratio_ >= 0.0)
-
-
-# ── Noise type ───────────────────────────────────────────────────────────────
 
 
 class TestNoiseType:
@@ -160,9 +146,6 @@ class TestNoiseType:
             assert Y.shape == (100, 2)
 
 
-# ── L2 penalty ───────────────────────────────────────────────────────────────
-
-
 class TestL2Penalty:
     def test_shrinks_loadings(self):
         X = _make_low_rank()
@@ -180,9 +163,6 @@ class TestL2Penalty:
         X = _make_low_rank()
         model = PPCA(n_components=2, noise_type="diagonal", l2_penalty=0.5).fit(X)
         assert model.components_.shape == (2, 10)
-
-
-# ── Convergence / diagnostics ────────────────────────────────────────────────
 
 
 class TestConvergence:
@@ -205,9 +185,6 @@ class TestConvergence:
         assert model.n_iter_ == len(model.log_likelihoods_)
 
 
-# ── Random state ─────────────────────────────────────────────────────────────
-
-
 class TestRandomState:
     def test_reproducibility(self):
         X = _make_low_rank()
@@ -221,9 +198,6 @@ class TestRandomState:
         m2 = PPCA(n_components=2, random_state=2).fit(X)
         # Could converge to same solution, but very unlikely with different seeds
         assert not np.allclose(m1.components_, m2.components_, atol=1e-3)
-
-
-# ── Edge cases ───────────────────────────────────────────────────────────────
 
 
 class TestEdgeCases:
