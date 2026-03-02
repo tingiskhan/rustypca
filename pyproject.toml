@@ -6,7 +6,7 @@ build-backend = "maturin"
 name = "rustypca"
 version = "0.1.0"
 description = "Probabilistic PCA with missing value support using Rust and PyO3"
-readme = {file = "README.md"}
+readme = {file = "README.md", content-type = "text/markdown"}
 license = {file = "LICENSE"}
 requires-python = ">=3.10,<3.14"
 authors = [{name = "Victor Gruselius", email = "victor.tingstrom@gmail.com"}]
