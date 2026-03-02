@@ -1,20 +1,18 @@
 # rustypca
 
-If you've ever had the misfortune of staring at a dataset full of NaNs and trying to perform PCA, wondering where your afternoon went — this library is for you.
-
-**rustypca** is a Python library for Probabilistic PCA that actually handles missing data gracefully, without requiring you to impute first and pray later. It uses the EM algorithm under the hood, with the heavy lifting done in Rust so you're not waiting around.
+A Python library for Probabilistic PCA that handles missing data without asking you to impute first. It uses the EM algorithm under the hood, with the number-crunching done in Rust.
 
 ## Why?
 
-Regular PCA falls apart the moment your data has holes in it. Probabilistic PCA treats the problem properly — missing values become latent variables in a generative model, which is a fancy way of saying "we do the math right instead of duct-taping NaNs."
+Regular PCA doesn't cope well when your data has holes in it. Probabilistic PCA treats missing values as latent variables in a generative model — a more principled approach than patching NaNs and hoping for the best.
 
 For the full story, see [Tipping & Bishop (1999)](https://www.robots.ox.ac.uk/~cbishop/papers/PPCA.pdf), *"Probabilistic Principal Component Analysis"*, Journal of the Royal Statistical Society, 61(3), 611–622.
 
 ## Features
 
-- **Rust backend** — fast enough that you can actually use it on real data
-- **Missing value support** — the whole point, really
-- **Scikit-learn compatible** — drop it in wherever you'd use `sklearn.decomposition.PCA`
+- **Rust backend** — keeps things snappy on larger datasets
+- **Missing value support** — the main reason this exists
+- **Scikit-learn compatible** — fits in wherever you'd use `sklearn.decomposition.PCA`
 
 ## Installation
 
@@ -50,7 +48,7 @@ model = PPCA(n_components=2)
 model.fit(X, missing_mask=missing_mask)
 ```
 
-No preprocessing. No imputation. Just hand it the data.
+No preprocessing or imputation needed.
 
 ## Testing
 
