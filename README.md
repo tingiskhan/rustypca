@@ -17,7 +17,7 @@ For the full story, see [Tipping & Bishop (1999)](https://www.robots.ox.ac.uk/~c
 ## Installation
 
 ```bash
-pip install -e .
+pip install rustypca
 ```
 
 You'll need a Rust toolchain to build from source. Python >= 3.10.
@@ -29,23 +29,11 @@ import numpy as np
 from rustypca import PPCA
 
 X = np.random.randn(100, 10)
+X[np.random.rand(100, 10) < 0.1] = np.nan  # Introduce some missing values
 
 model = PPCA(n_components=2)
 X_transformed = model.fit_transform(X)
 X_reconstructed = model.inverse_transform(X_transformed)
-```
-
-### With missing values
-
-```python
-import numpy as np
-from rustypca import PPCA
-
-X = np.random.randn(100, 10)
-missing_mask = np.random.rand(100, 10) < 0.1  # 10% missing
-
-model = PPCA(n_components=2)
-model.fit(X, missing_mask=missing_mask)
 ```
 
 No preprocessing or imputation needed.
