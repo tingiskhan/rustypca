@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "rustypca"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Probabilistic PCA with missing value support using Rust and PyO3"
 readme = {file = "README.md", content-type = "text/markdown"}
 license = {file = "LICENSE"}
