@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "rustypca"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Probabilistic PCA with missing value support using Rust and PyO3"
 readme = {file = "README.md", content-type = "text/markdown"}
 license = {file = "LICENSE"}
@@ -56,8 +56,8 @@ lint.select = [
 
 [dependency-groups]
 dev = [
-    "pytest>=8.0,<9.0",
-    "pytest-cov>=3.0,<4.0",
+    "pytest>=8.0,<10.0",
+    "pytest-cov>=3.0,<8.0",
     "maturin>=1.0,<2.0",
     "ruff>=0.15,<0.16",
     "yfinance>=1.2.0,<2.0",
