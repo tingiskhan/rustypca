@@ -1,9 +1,15 @@
 import numpy as np
 import pytest
+import sklearn.base
 from sklearn.decomposition import PCA
 from sklearn.exceptions import NotFittedError
 
 from rustypca import PPCA
+
+_HAS_SET_OUTPUT = hasattr(sklearn.base.TransformerMixin, "set_output")
+requires_set_output = pytest.mark.skipif(
+    not _HAS_SET_OUTPUT, reason="set_output requires scikit-learn>=1.2"
+)
 
 
 def _make_low_rank(n=100, p=10, d=3, noise=0.1, seed=0):
@@ -266,8 +272,6 @@ class TestPandasOutput:
         assert list(names) == ["ppca0", "ppca1", "ppca2"]
 
     def test_get_feature_names_out_not_fitted_raises(self):
-        from sklearn.exceptions import NotFittedError
-
         with pytest.raises(NotFittedError):
             PPCA(n_components=2).get_feature_names_out()
 
@@ -279,6 +283,7 @@ class TestPandasOutput:
         assert isinstance(Y, np.ndarray)
         assert Y.shape == (50, 3)
 
+    @requires_set_output
     def test_set_output_pandas_transform(self):
         pd = pytest.importorskip("pandas")
         X = pd.DataFrame(_make_low_rank(n=50, p=8))
@@ -289,6 +294,7 @@ class TestPandasOutput:
         assert Y.shape == (50, 3)
         assert list(Y.columns) == ["ppca0", "ppca1", "ppca2"]
 
+    @requires_set_output
     def test_set_output_pandas_preserves_index(self):
         pd = pytest.importorskip("pandas")
         idx = pd.date_range("2020-01-01", periods=50, freq="D")
@@ -298,6 +304,7 @@ class TestPandasOutput:
         Y = model.transform(X)
         pd.testing.assert_index_equal(Y.index, X.index)
 
+    @requires_set_output
     def test_set_output_pandas_fit_transform(self):
         pd = pytest.importorskip("pandas")
         X = pd.DataFrame(_make_low_rank(n=50, p=8))
@@ -307,6 +314,7 @@ class TestPandasOutput:
         assert Y.shape == (50, 3)
         assert list(Y.columns) == ["ppca0", "ppca1", "ppca2"]
 
+    @requires_set_output
     def test_set_output_pandas_with_nan(self):
         pd = pytest.importorskip("pandas")
         X = pd.DataFrame(_make_low_rank(n=50, p=8))

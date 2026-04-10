@@ -151,7 +151,8 @@ class PPCA(BaseEstimator, TransformerMixin):
 
         """
         check_is_fitted(self, ["components_"])
-        return np.array([f"ppca{i}" for i in range(self.n_components)], dtype=object)
+        n_components = self.components_.shape[0]
+        return np.array([f"ppca{i}" for i in range(n_components)], dtype=object)
 
     def transform(self, X):
         """Project *X* into latent space.
