@@ -7,9 +7,7 @@ from sklearn.exceptions import NotFittedError
 from rustypca import PPCA
 
 _HAS_SET_OUTPUT = hasattr(sklearn.base.TransformerMixin, "set_output")
-requires_set_output = pytest.mark.skipif(
-    not _HAS_SET_OUTPUT, reason="set_output requires scikit-learn>=1.2"
-)
+requires_set_output = pytest.mark.skipif(not _HAS_SET_OUTPUT, reason="set_output requires scikit-learn>=1.2")
 
 
 def _make_low_rank(n=100, p=10, d=3, noise=0.1, seed=0):
