@@ -257,3 +257,62 @@ class TestNumericalStability:
         X[:, 0] = 5.0
         model = PPCA(n_components=2).fit(X)
         assert np.all(np.isfinite(model.components_))
+
+
+class TestPandasOutput:
+    def test_get_feature_names_out(self):
+        model = PPCA(n_components=3).fit(_make_low_rank(n=50, p=8))
+        names = model.get_feature_names_out()
+        assert list(names) == ["ppca0", "ppca1", "ppca2"]
+
+    def test_get_feature_names_out_not_fitted_raises(self):
+        from sklearn.exceptions import NotFittedError
+
+        with pytest.raises(NotFittedError):
+            PPCA(n_components=2).get_feature_names_out()
+
+    def test_transform_dataframe_input_default_output(self):
+        pd = pytest.importorskip("pandas")
+        X = pd.DataFrame(_make_low_rank(n=50, p=8))
+        model = PPCA(n_components=3).fit(X)
+        Y = model.transform(X)
+        assert isinstance(Y, np.ndarray)
+        assert Y.shape == (50, 3)
+
+    def test_set_output_pandas_transform(self):
+        pd = pytest.importorskip("pandas")
+        X = pd.DataFrame(_make_low_rank(n=50, p=8))
+        model = PPCA(n_components=3).set_output(transform="pandas")
+        model.fit(X)
+        Y = model.transform(X)
+        assert isinstance(Y, pd.DataFrame)
+        assert Y.shape == (50, 3)
+        assert list(Y.columns) == ["ppca0", "ppca1", "ppca2"]
+
+    def test_set_output_pandas_preserves_index(self):
+        pd = pytest.importorskip("pandas")
+        idx = pd.date_range("2020-01-01", periods=50, freq="D")
+        X = pd.DataFrame(_make_low_rank(n=50, p=8), index=idx)
+        model = PPCA(n_components=3).set_output(transform="pandas")
+        model.fit(X)
+        Y = model.transform(X)
+        pd.testing.assert_index_equal(Y.index, X.index)
+
+    def test_set_output_pandas_fit_transform(self):
+        pd = pytest.importorskip("pandas")
+        X = pd.DataFrame(_make_low_rank(n=50, p=8))
+        model = PPCA(n_components=3).set_output(transform="pandas")
+        Y = model.fit_transform(X)
+        assert isinstance(Y, pd.DataFrame)
+        assert Y.shape == (50, 3)
+        assert list(Y.columns) == ["ppca0", "ppca1", "ppca2"]
+
+    def test_set_output_pandas_with_nan(self):
+        pd = pytest.importorskip("pandas")
+        X = pd.DataFrame(_make_low_rank(n=50, p=8))
+        X.iloc[0, 0] = np.nan
+        model = PPCA(n_components=3).set_output(transform="pandas")
+        model.fit(X)
+        Y = model.transform(X)
+        assert isinstance(Y, pd.DataFrame)
+        assert np.all(np.isfinite(Y.values))
