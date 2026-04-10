@@ -1,9 +1,13 @@
 import numpy as np
 import pytest
+import sklearn.base
 from sklearn.decomposition import PCA
 from sklearn.exceptions import NotFittedError
 
 from rustypca import PPCA
+
+_HAS_SET_OUTPUT = hasattr(sklearn.base.TransformerMixin, "set_output")
+requires_set_output = pytest.mark.skipif(not _HAS_SET_OUTPUT, reason="set_output requires scikit-learn>=1.2")
 
 
 def _make_low_rank(n=100, p=10, d=3, noise=0.1, seed=0):
@@ -257,3 +261,138 @@ class TestNumericalStability:
         X[:, 0] = 5.0
         model = PPCA(n_components=2).fit(X)
         assert np.all(np.isfinite(model.components_))
+
+
+class TestPandasOutput:
+    def test_get_feature_names_out(self):
+        model = PPCA(n_components=3).fit(_make_low_rank(n=50, p=8))
+        names = model.get_feature_names_out()
+        assert list(names) == ["ppca0", "ppca1", "ppca2"]
+
+    def test_get_feature_names_out_not_fitted_raises(self):
+        with pytest.raises(NotFittedError):
+            PPCA(n_components=2).get_feature_names_out()
+
+    def test_transform_dataframe_input_default_output(self):
+        pd = pytest.importorskip("pandas")
+        X = pd.DataFrame(_make_low_rank(n=50, p=8))
+        model = PPCA(n_components=3).fit(X)
+        Y = model.transform(X)
+        assert isinstance(Y, np.ndarray)
+        assert Y.shape == (50, 3)
+
+    @requires_set_output
+    def test_set_output_pandas_transform(self):
+        pd = pytest.importorskip("pandas")
+        X = pd.DataFrame(_make_low_rank(n=50, p=8))
+        model = PPCA(n_components=3).set_output(transform="pandas")
+        model.fit(X)
+        Y = model.transform(X)
+        assert isinstance(Y, pd.DataFrame)
+        assert Y.shape == (50, 3)
+        assert list(Y.columns) == ["ppca0", "ppca1", "ppca2"]
+
+    @requires_set_output
+    def test_set_output_pandas_preserves_index(self):
+        pd = pytest.importorskip("pandas")
+        idx = pd.date_range("2020-01-01", periods=50, freq="D")
+        X = pd.DataFrame(_make_low_rank(n=50, p=8), index=idx)
+        model = PPCA(n_components=3).set_output(transform="pandas")
+        model.fit(X)
+        Y = model.transform(X)
+        pd.testing.assert_index_equal(Y.index, X.index)
+
+    @requires_set_output
+    def test_set_output_pandas_fit_transform(self):
+        pd = pytest.importorskip("pandas")
+        X = pd.DataFrame(_make_low_rank(n=50, p=8))
+        model = PPCA(n_components=3).set_output(transform="pandas")
+        Y = model.fit_transform(X)
+        assert isinstance(Y, pd.DataFrame)
+        assert Y.shape == (50, 3)
+        assert list(Y.columns) == ["ppca0", "ppca1", "ppca2"]
+
+    @requires_set_output
+    def test_set_output_pandas_with_nan(self):
+        pd = pytest.importorskip("pandas")
+        X = pd.DataFrame(_make_low_rank(n=50, p=8))
+        X.iloc[0, 0] = np.nan
+        model = PPCA(n_components=3).set_output(transform="pandas")
+        model.fit(X)
+        Y = model.transform(X)
+        assert isinstance(Y, pd.DataFrame)
+        assert np.all(np.isfinite(Y.values))
+
+
+class TestPipeline:
+    def test_pipeline_fit_transform(self):
+        from sklearn.pipeline import make_pipeline
+        from sklearn.preprocessing import StandardScaler
+
+        X = _make_low_rank(n=100, p=10, d=3)
+        pipe = make_pipeline(StandardScaler(), PPCA(n_components=3))
+        Y = pipe.fit_transform(X)
+        assert Y.shape == (100, 3)
+        assert np.all(np.isfinite(Y))
+
+    def test_pipeline_fit_then_transform(self):
+        from sklearn.pipeline import make_pipeline
+        from sklearn.preprocessing import StandardScaler
+
+        X_train = _make_low_rank(n=80, p=10, d=3)
+        X_test = _make_low_rank(n=20, p=10, d=3, seed=99)
+        pipe = make_pipeline(StandardScaler(), PPCA(n_components=3))
+        pipe.fit(X_train)
+        Y = pipe.transform(X_test)
+        assert Y.shape == (20, 3)
+        assert np.all(np.isfinite(Y))
+
+    def test_pipeline_with_missing_values(self):
+        from sklearn.pipeline import Pipeline
+
+        X = _add_missing(_make_low_rank(n=100, p=10, d=3))
+        pipe = Pipeline([("ppca", PPCA(n_components=3))])
+        Y = pipe.fit_transform(X)
+        assert Y.shape == (100, 3)
+        assert np.all(np.isfinite(Y))
+
+    def test_pipeline_get_params(self):
+        from sklearn.pipeline import make_pipeline
+        from sklearn.preprocessing import StandardScaler
+
+        pipe = make_pipeline(StandardScaler(), PPCA(n_components=4, noise_type="diagonal"))
+        params = pipe.get_params()
+        assert params["ppca__n_components"] == 4
+        assert params["ppca__noise_type"] == "diagonal"
+
+    def test_pipeline_set_params(self):
+        from sklearn.pipeline import make_pipeline
+        from sklearn.preprocessing import StandardScaler
+
+        pipe = make_pipeline(StandardScaler(), PPCA(n_components=2))
+        pipe.set_params(ppca__n_components=5)
+        assert pipe.named_steps["ppca"].n_components == 5
+
+    def test_pipeline_dataframe_input_numpy_output(self):
+        pd = pytest.importorskip("pandas")
+        from sklearn.pipeline import make_pipeline
+        from sklearn.preprocessing import StandardScaler
+
+        X = pd.DataFrame(_make_low_rank(n=50, p=8), columns=[f"f{i}" for i in range(8)])
+        pipe = make_pipeline(StandardScaler(), PPCA(n_components=3))
+        Y = pipe.fit_transform(X)
+        assert isinstance(Y, np.ndarray)
+        assert Y.shape == (50, 3)
+
+    @requires_set_output
+    def test_pipeline_pandas_output(self):
+        pd = pytest.importorskip("pandas")
+        from sklearn.pipeline import make_pipeline
+        from sklearn.preprocessing import StandardScaler
+
+        X = pd.DataFrame(_make_low_rank(n=50, p=8), columns=[f"f{i}" for i in range(8)])
+        pipe = make_pipeline(StandardScaler(), PPCA(n_components=3)).set_output(transform="pandas")
+        Y = pipe.fit_transform(X)
+        assert isinstance(Y, pd.DataFrame)
+        assert Y.shape == (50, 3)
+        assert list(Y.columns) == ["ppca0", "ppca1", "ppca2"]

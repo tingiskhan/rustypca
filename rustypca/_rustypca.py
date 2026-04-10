@@ -136,6 +136,24 @@ class PPCA(BaseEstimator, TransformerMixin):
 
         return self
 
+    def get_feature_names_out(self, input_features=None):
+        """Get output feature names for transformation.
+
+        Parameters
+        ----------
+        input_features : ignored
+            Not used; present for sklearn API compatibility.
+
+        Returns
+        -------
+        feature_names_out : ndarray of str objects of shape (n_components,)
+            Transformed feature names: ``["ppca0", "ppca1", ...]``.
+
+        """
+        check_is_fitted(self, ["components_"])
+        n_components = self.components_.shape[0]
+        return np.array([f"ppca{i}" for i in range(n_components)], dtype=object)
+
     def transform(self, X):
         """Project *X* into latent space.
 
